@@ -1,0 +1,6 @@
+node_modules/
+dist/
+build/bundle.js
+build/sea.blob
+build/sea-config.json
+build/meta.json

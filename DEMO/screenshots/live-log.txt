@@ -1,0 +1,80 @@
+12:07:56
+Pharmacy MIS 1.0.0 — Node 24.14.0
+12:07:56
+Portal pull (Puppeteer) is not part of this build — map files pulled or exported by hand.
+12:07:59
+--- run started 2/9/2026, 12:07:59 pm ---
+12:07:59
+Stage 1/5 - Resolve run
+12:07:59
+  date taken from the date field: 2026-08-08
+12:07:59
+  report date       2026-08-08 (August 2026)
+12:07:59
+  month folder      c:\Users\hp\Downloads\INTERNSHIP\DAILY REPORT\DEMO\Pharmacy-MIS\2026\08-August
+12:07:59
+  master report     c:\Users\hp\Downloads\INTERNSHIP\DAILY REPORT\DEMO\Pharmacy-MIS\2026\08-August\outputs\Master_Report_August_2026.xlsx
+12:07:59
+Stage 2/5 - Collect source files
+12:07:59
+  scanned c:/Users/hp/Downloads/INTERNSHIP/DAILY REPORT/DEMO/Pharmacy-MIS/2026/08-August/inputs/2026-08-08
+12:07:59
+  found 3 candidate file(s): Pharmacy_PRQ_Details.csv, Purchase_Order_Detail_Report.xlsx, Purchase_Report_Pharmacy_Detail.csv
+12:07:59
+Stage 3/5 - Identify files by column layout
+12:07:59
+  Pharmacy_PRQ_Details.csv -> PRQ (Pharmacy PRQ Details), high confidence
+12:07:59
+  Purchase_Order_Detail_Report.xlsx -> PO (Purchase Order Detail Report), high confidence
+12:07:59
+  Purchase_Report_Pharmacy_Detail.csv -> GRN (Purchase Report Pharmacy Detail (GRN)), high confidence
+12:07:59
+Stage 4/5 - Apply column mapping rules
+12:07:59
+  PRQ section -> columns C, D  [Pharmacy_PRQ_Details.csv]
+12:07:59
+    51 PRQ line rows read
+12:07:59
+    dropped 22 row(s) on 6 system-generated PRQ(s) starting "AUTO"[6 ▾]
+12:07:59
+    C · Total no. of PRQ = 21[21 ▾]
+12:07:59
+    D · PRQ Itemwise = 29[29 ▾]
+12:07:59
+  PO section -> columns E, F, G  [Purchase_Order_Detail_Report.xlsx]
+12:07:59
+    62 PO line rows read
+12:07:59
+    filter 1 — dropped 31 row(s) on 10 AUTO PRQ(s)[10 ▾]
+12:07:59
+    filter 2 — no suffixed PO numbers among the rows that survived filter 1
+12:07:59
+    E · PO Created = 26[26 ▾]
+12:07:59
+    F · PO Items = 31[31 ▾]
+12:07:59
+    G · Total PO Value = 16,74,801.30  (totals row 64, taken as printed)
+12:07:59
+  GRN section -> columns H, I, J  [Purchase_Report_Pharmacy_Detail.csv]
+12:07:59
+    198 GRN line rows read (no AUTO/suffix filter applies to this section)
+12:07:59
+    H · Total no. of GRN = 80[80 ▾]
+12:07:59
+    I · GRN Itemwise = 169[169 ▾]
+12:07:59
+    J · Total GRN Value = 26,56,763.31  (totals row 200, taken as printed)
+12:07:59
+Stage 5/5 - Update master report
+12:08:00
+  opened existing master: Master_Report_August_2026.xlsx (2 date row(s) already present)
+12:08:00
+  2026-08-08 already has row 3 - updating it in place
+12:08:00
+  master now holds 2 date row(s); columns K-Q left untouched
+12:08:00
+  saved Master_Report_August_2026.xlsx - row 3 updated
+12:08:00
+done in 0.51s
+12:08:00
+--- run finished ---
