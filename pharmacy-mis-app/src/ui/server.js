@@ -5,8 +5,47 @@ const crypto = require('crypto');
 const { runDailyReport } = require('../pipeline');
 const { pickFolder, pickFile, revealInExplorer, openWithDefaultApp } = require('./dialogs');
 const { resolveLayout, dateFromName } = require('../core/paths');
-const { isAvailable: scraperAvailable, REPORTS } = require('../scraper');
 const { page } = require('./page');
+const { log } = require('../core/appdata');
+
+/**
+ * The portal scraper is the admin-only half of the project and is not part of
+ * the customer build. It is loaded defensively and behind a lazy call so that
+ * a missing or broken optional module can never be the reason the customer's
+ * app fails to start — the mapping half stays fully usable either way.
+ */
+function scraperInfo() {
+  try {
+    // eslint-disable-next-line global-require
+    const scraper = require('../scraper');
+    return {
+      available: scraper.isAvailable(),
+      reports: scraper.REPORTS.map((r) => ({ key: r.key, label: r.label })),
+    };
+  } catch (err) {
+    log.warn('optional portal scraper unavailable: ' + err.message);
+    return { available: false, reports: [], error: err.message };
+  }
+}
+
+/**
+ * The application version. Taken from Electron, which reads it out of the
+ * package.json inside the packaged asar, so there is no file to find on disk
+ * next to the exe. Outside Electron (the test harness) it degrades to the
+ * source package.json, and to 'unknown' if even that is not there.
+ */
+function appVersion() {
+  try {
+    // eslint-disable-next-line global-require
+    return require('electron').app.getVersion();
+  } catch { /* not running under Electron */ }
+  try {
+    // eslint-disable-next-line global-require
+    return require('../../package.json').version;
+  } catch {
+    return 'unknown';
+  }
+}
 
 /**
  * The app's local server. Zero dependencies beyond node:http on purpose - it
@@ -25,10 +64,11 @@ let nextStreamId = 1;
 
 function broadcast(event, data) {
   const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const [id, res] of streams) {
+  for (const [id, stream] of streams) {
     try {
-      res.write(frame);
+      stream.res.write(frame);
     } catch {
+      clearInterval(stream.keepAlive);
       streams.delete(id);
     }
   }
@@ -82,6 +122,27 @@ const routes = {
         (entry) => broadcast('log', entry),
       );
       broadcast('run-end', result);
+      if (result.ok) {
+        log.info('run ok — ' + result.date + ' ' + result.write.mode + ' row ' + result.write.row
+          + ' in ' + result.layout.masterFile);
+      } else {
+        // A failed run is the likeliest way this application "does not work"
+        // from the customer's point of view, so it is recorded the same way a
+        // startup failure is: technical log, and a readable copy in Documents.
+        log.error(
+          [
+            'The daily report could not be generated.',
+            '',
+            'What went wrong:  ' + result.error,
+            'Archive folder:   ' + (body.archiveRoot || '(not set)'),
+            'Report date:      ' + (body.reportDate || '(not set)'),
+            'Inputs folder:    ' + (body.inputFolder || '(not set)'),
+          ].join('\n'),
+          (result.log || [])
+            .map((e) => e.level.toUpperCase().padEnd(5) + ' ' + '  '.repeat(e.indent || 0) + e.message)
+            .join('\n'),
+        );
+      }
       return result;
     } finally {
       runInFlight = false;
@@ -134,12 +195,10 @@ const routes = {
   async 'GET /api/status'() {
     return {
       ok: true,
-      version: require('../../package.json').version,
+      version: appVersion(),
       node: process.versions.node,
-      scraper: {
-        available: scraperAvailable(),
-        reports: REPORTS.map((r) => ({ key: r.key, label: r.label })),
-      },
+      electron: process.versions.electron || null,
+      scraper: scraperInfo(),
     };
   },
 };
@@ -174,8 +233,8 @@ function createServer() {
       });
       res.write('retry: 1000\n\n');
       const id = nextStreamId++;
-      streams.set(id, res);
       const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* dropped */ } }, 15000);
+      streams.set(id, { res, keepAlive });
       req.on('close', () => { clearInterval(keepAlive); streams.delete(id); });
       return;
     }
@@ -191,7 +250,31 @@ function createServer() {
     }
   });
 
-  return { server, token: TOKEN, broadcast };
+  /**
+   * Shut the server down promptly.
+   *
+   * An event-stream response never ends by itself, and server.close() waits
+   * for open responses — so on its own it left the application running for
+   * about 22 seconds after the window was closed, which looks from Task
+   * Manager exactly like an app that failed to exit. The open streams are
+   * therefore ended explicitly, their keep-alive timers cleared, and any
+   * socket still lingering destroyed.
+   */
+  function shutdown() {
+    for (const [id, stream] of streams) {
+      clearInterval(stream.keepAlive);
+      try { stream.res.end(); } catch { /* already gone */ }
+      try { stream.res.destroy(); } catch { /* already gone */ }
+      streams.delete(id);
+    }
+    try { server.close(); } catch { /* already closing */ }
+    // Node 18.2+. Anything still holding a socket open is not worth waiting for.
+    if (typeof server.closeAllConnections === 'function') {
+      try { server.closeAllConnections(); } catch { /* nothing to close */ }
+    }
+  }
+
+  return { server, token: TOKEN, broadcast, shutdown };
 }
 
 module.exports = { createServer, TOKEN };

@@ -1,49 +1,152 @@
 'use strict';
 
-const { execFile } = require('child_process');
 const path = require('path');
+const { execFile } = require('child_process');
 
 /**
- * Native Windows file and folder pickers.
+ * File and folder pickers, and the two "show me the result" actions.
  *
- * The window is a WebView2 surface, not a browser tab with privileges, and a
- * dropped file never exposes its full path to page script. So picking is done
- * where the real dialogs live: a short-lived PowerShell process hosting the
- * WinForms/Shell common dialogs. It returns the absolute path on stdout, or an
- * empty string when the user cancels.
+ * Inside the app window these are Electron's own native dialogs: they are part
+ * of the binary, they are modal to the app window, and they need no external
+ * process. The previous build shelled out to powershell.exe hosting WinForms,
+ * which meant a spawn per click, a visible flicker, and a dependency on
+ * PowerShell's execution environment being sane on the customer's machine.
  *
- * -STA is required: the common dialogs will not open on an MTA thread.
+ * The PowerShell path is kept only as a fallback for the headless binary,
+ * where there is no Electron app object to parent a dialog to. Nothing in the
+ * customer's GUI flow reaches it.
  */
 
-const PS = 'powershell.exe';
-const TIMEOUT_MS = 5 * 60 * 1000; // a user may leave the dialog open a while
+/** Electron, or null when this module is loaded outside the app process. */
+function electron() {
+  try {
+    // eslint-disable-next-line global-require
+    const mod = require('electron');
+    return mod && mod.dialog && mod.app ? mod : null;
+  } catch {
+    return null;
+  }
+}
+
+function focusedWindow(mod) {
+  try {
+    return mod.BrowserWindow.getFocusedWindow() || mod.BrowserWindow.getAllWindows()[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+const FILE_FILTERS = [
+  { name: 'Report files', extensions: ['csv', 'xlsx', 'xlsm', 'txt'] },
+  { name: 'CSV files', extensions: ['csv'] },
+  { name: 'Excel files', extensions: ['xlsx', 'xlsm'] },
+  { name: 'All files', extensions: ['*'] },
+];
+
+/* ------------------------------------------------------------------ *
+ * Pickers
+ * ------------------------------------------------------------------ */
+
+async function pickFolder({ title = 'Select a folder', initial = '' } = {}) {
+  const mod = electron();
+  if (mod) {
+    const win = focusedWindow(mod);
+    const options = {
+      title,
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: initial || undefined,
+    };
+    const res = win
+      ? await mod.dialog.showOpenDialog(win, options)
+      : await mod.dialog.showOpenDialog(options);
+    return res.canceled || !res.filePaths.length ? null : res.filePaths[0];
+  }
+  return powershellFolder(title, initial);
+}
+
+async function pickFile({ title = 'Select a file', initial = '' } = {}) {
+  const mod = electron();
+  if (mod) {
+    const win = focusedWindow(mod);
+    const options = {
+      title,
+      properties: ['openFile'],
+      filters: FILE_FILTERS,
+      defaultPath: initial || undefined,
+    };
+    const res = win
+      ? await mod.dialog.showOpenDialog(win, options)
+      : await mod.dialog.showOpenDialog(options);
+    return res.canceled || !res.filePaths.length ? null : res.filePaths[0];
+  }
+  return powershellFile(title, initial);
+}
+
+/* ------------------------------------------------------------------ *
+ * Reveal / open
+ * ------------------------------------------------------------------ */
+
+/** Reveal a file in Explorer with it selected, or open a folder. */
+async function revealInExplorer(target) {
+  const mod = electron();
+  if (mod) {
+    if (path.extname(target)) mod.shell.showItemInFolder(target);
+    else await mod.shell.openPath(target);
+    return;
+  }
+  await new Promise((resolve) => {
+    const args = path.extname(target) ? ['/select,', target] : [target];
+    execFile('explorer.exe', args, () => resolve());
+  });
+}
+
+/** Open a file with whatever Windows has associated with it (Excel, usually). */
+async function openWithDefaultApp(target) {
+  const mod = electron();
+  if (mod) {
+    // openPath resolves to '' on success and to a message on failure, rather
+    // than rejecting — so the failure has to be turned into one by hand.
+    const problem = await mod.shell.openPath(target);
+    if (problem) throw new Error('Could not open ' + path.basename(target) + ': ' + problem);
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', "Start-Process -FilePath '" + psQuote(target) + "'"],
+      { windowsHide: true },
+      (err) => (err ? reject(new Error('Could not open ' + path.basename(target) + ': ' + err.message)) : resolve()),
+    );
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * PowerShell fallback (headless only)
+ * ------------------------------------------------------------------ */
+
+const PS_TIMEOUT_MS = 5 * 60 * 1000;
+
+function psQuote(value) {
+  return String(value == null ? '' : value).replace(/'/g, "''");
+}
 
 function runPowerShell(script) {
   return new Promise((resolve, reject) => {
     execFile(
-      PS,
+      'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-STA', '-Command', script],
-      { timeout: TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 },
+      { timeout: PS_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024 },
       (err, stdout, stderr) => {
         if (err && err.killed) return reject(new Error('The file dialog timed out.'));
-        if (err) return reject(new Error(`Could not open the dialog: ${stderr || err.message}`));
-        resolve(String(stdout).trim());
+        if (err) return reject(new Error('Could not open the dialog: ' + (stderr || err.message)));
+        return resolve(String(stdout).trim());
       },
     );
   });
 }
 
-/** Escape a string for a PowerShell single-quoted literal. */
-function psQuote(value) {
-  return String(value == null ? '' : value).replace(/'/g, "''");
-}
-
-/**
- * Folder picker. Uses the modern Shell "open folder" dialog via a
- * FolderBrowserDialog, seeded at `initial` when one is given.
- */
-async function pickFolder({ title = 'Select a folder', initial = '' } = {}) {
-  const script = `
+async function powershellFolder(title, initial) {
+  const out = await runPowerShell(`
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.FolderBrowserDialog
 $d.Description = '${psQuote(title)}'
@@ -52,45 +155,22 @@ $d.UseDescriptionForTitle = $true
 $seed = '${psQuote(initial)}'
 if ($seed -and (Test-Path -LiteralPath $seed)) { $d.SelectedPath = $seed }
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }
-`;
-  const out = await runPowerShell(script);
+`);
   return out || null;
 }
 
-/** File picker, filtered to the formats the portal exports. */
-async function pickFile({ title = 'Select a file', initial = '' } = {}) {
-  const script = `
+async function powershellFile(title, initial) {
+  const out = await runPowerShell(`
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.OpenFileDialog
 $d.Title = '${psQuote(title)}'
-$d.Filter = 'Report files (*.csv;*.xlsx)|*.csv;*.xlsx|CSV files (*.csv)|*.csv|Excel files (*.xlsx)|*.xlsx|All files (*.*)|*.*'
+$d.Filter = 'Report files (*.csv;*.xlsx)|*.csv;*.xlsx|All files (*.*)|*.*'
 $d.Multiselect = $false
 $seed = '${psQuote(initial)}'
 if ($seed -and (Test-Path -LiteralPath $seed)) { $d.InitialDirectory = $seed }
 if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }
-`;
-  const out = await runPowerShell(script);
+`);
   return out || null;
-}
-
-/** Reveal a file in Explorer with it selected, or open a folder. */
-function revealInExplorer(target) {
-  return new Promise((resolve) => {
-    const args = path.extname(target) ? ['/select,', target] : [target];
-    execFile('explorer.exe', args, { windowsHide: false }, () => resolve());
-  });
-}
-
-/** Open a file with whatever Windows has associated with it (Excel, usually). */
-function openWithDefaultApp(target) {
-  return new Promise((resolve, reject) => {
-    execFile(
-      PS,
-      ['-NoProfile', '-NonInteractive', '-Command', `Start-Process -FilePath '${psQuote(target)}'`],
-      { windowsHide: true },
-      (err) => (err ? reject(new Error(`Could not open ${path.basename(target)}: ${err.message}`)) : resolve()),
-    );
-  });
 }
 
 module.exports = { pickFolder, pickFile, revealInExplorer, openWithDefaultApp };

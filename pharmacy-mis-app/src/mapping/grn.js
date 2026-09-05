@@ -11,6 +11,20 @@ const { countDistinct, dataRows, findTotalsRow, parseAmount } = require('./rules
  *
  * No AUTO / suffix filtering here: the GRN section of the mapping document
  * applies neither rule, so every receipt line counts.
+ *
+ * READ THIS BEFORE "FIXING" H.
+ * ---------------------------
+ * H is labelled "Total no. of GRN" but is counted off the PO No. column, not
+ * the GRN No. column. That looks like a mistake and is not. On the reference
+ * day the two disagree — 80 distinct PO numbers against 83 distinct GRN
+ * numbers, because one purchase order can be received in more than one goods
+ * receipt — and the figure the mapping document specifies for H is 80. So the
+ * column counts the purchase orders received against, which is what the
+ * business means by "a GRN" here.
+ *
+ * Both numbers are asserted in the self-test, so changing this to count GRN
+ * numbers fails the build rather than quietly shifting the report. If the
+ * business ever confirms it wants 83, change it there first.
  */
 function mapGrn(sheet, log) {
   const idFields = ['po no', 'grn no', 'drug description'];

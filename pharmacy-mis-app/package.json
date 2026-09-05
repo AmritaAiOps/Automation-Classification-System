@@ -2,23 +2,55 @@
   "name": "pharmacy-mis",
   "productName": "Pharmacy MIS",
   "version": "1.0.0",
-  "description": "Daily Purchase & Inventory Report automation — Sudhamayi Enterprise Pvt. Ltd. (Pharmacy)",
-  "main": "src/main.js",
+  "description": "Daily Purchase & Inventory MIS Report automation for Pharmacy",
+  "main": "src/app/main.js",
   "author": "Sudhamayi Enterprise Pvt. Ltd.",
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
-    "start": "node src/main.js",
-    "cli": "node src/cli.js",
+    "start": "electron .",
+    "cli": "electron . --cli",
     "test": "node tools/selftest.js",
-    "build": "node tools/build.js"
+    "icon": "node tools/make-icon.js",
+    "build": "node tools/build.js",
+    "release-test": "node tools/release-test.js",
+    "audit-deps": "node tools/audit-dependencies.js",
+    "check-failure-dialog": "node tools/check-failure-dialog.js"
   },
   "dependencies": {
     "exceljs": "4.4.0"
   },
   "devDependencies": {
-    "esbuild": "0.25.12",
-    "postject": "1.0.0-alpha.6",
-    "rcedit": "3.0.1"
+    "electron": "33.4.11",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.sudhamayi.pharmacymis",
+    "productName": "Pharmacy MIS",
+    "copyright": "Copyright © Sudhamayi Enterprise Pvt. Ltd.",
+    "asar": true,
+    "compression": "normal",
+    "npmRebuild": false,
+    "buildDependenciesFromSource": false,
+    "directories": {
+      "output": "build",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "assets/icon.ico",
+      "package.json",
+      "!**/*.map",
+      "!**/{.eslintrc,.editorconfig,.gitignore}"
+    ],
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "icon": "assets/icon.ico",
+      "legalTrademarks": "Sudhamayi Enterprise Pvt. Ltd.",
+      "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": true
+    }
   }
 }

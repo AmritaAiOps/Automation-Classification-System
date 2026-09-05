@@ -119,6 +119,11 @@ async function main() {
   check('F - PO Items', run.fields.F, 31);
   check('G - Total PO Value', run.fields.G, 1674801.3);
   check('H - Total no. of GRN', run.fields.H, 80);
+  // H counts distinct PO numbers, not distinct GRN numbers - see the note at
+  // the top of src/mapping/grn.js. Both are pinned so the difference between
+  // them cannot be closed by accident.
+  check('H counts POs received against, not GRN numbers', run.audit.GRN.poNumbers.length, 80);
+  check('the same day has 83 distinct GRN numbers', run.audit.GRN.grnNumbers.length, 83);
   check('I - GRN Itemwise', run.fields.I, 169);
   check('J - Total GRN Value', run.fields.J, 2656763.31);
   check('all three sources identified', run.sources.length, 3);
