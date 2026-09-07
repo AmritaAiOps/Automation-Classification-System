@@ -189,6 +189,13 @@ USB stick.
 Nothing is written beside the exe, because the exe may be somewhere the
 customer cannot write.
 
+A folder named `1.0.0-<payload hash>-2` beside that one is normal, and means the
+launcher could not replace the original — antivirus holding the new files open,
+or a copy of the application that was still running — so it used the next name
+rather than refusing to start. It costs the disk space of one more copy, and the
+next new version clears both away. `npm run check-unpack-recovery` is what keeps
+that path working.
+
 ### When something goes wrong
 
 Every failure is recorded **twice**: once in the technical log above, and once
@@ -271,6 +278,9 @@ tools/
                            import table — how "nothing to install" is checked
   check-failure-dialog.js  provokes the launcher's failure path and confirms
                            the customer actually sees a dialog
+  check-unpack-recovery.js compiles Launcher.cs against a small payload and
+                           checks it still starts when Windows will not let it
+                           replace the folder it unpacks into
 ```
 
 ## Development
@@ -283,6 +293,7 @@ npm run build       # -> dist/Pharmacy-MIS.exe   (1-5 min, see below)
 npm run release-test # checks the built exe, not the source  (~5 min)
 npm run audit-deps  # lists every DLL the exe asks Windows for
 npm run check-failure-dialog  # proves the launcher's error dialog appears
+npm run check-unpack-recovery # proves a locked runtime folder cannot stop a launch
 ```
 
 Build time is dominated by compressing the payload — LZMS takes about 90

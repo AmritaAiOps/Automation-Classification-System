@@ -15,7 +15,8 @@
     "build": "node tools/build.js",
     "release-test": "node tools/release-test.js",
     "audit-deps": "node tools/audit-dependencies.js",
-    "check-failure-dialog": "node tools/check-failure-dialog.js"
+    "check-failure-dialog": "node tools/check-failure-dialog.js",
+    "check-unpack-recovery": "node tools/check-unpack-recovery.js"
   },
   "dependencies": {
     "exceljs": "4.4.0"

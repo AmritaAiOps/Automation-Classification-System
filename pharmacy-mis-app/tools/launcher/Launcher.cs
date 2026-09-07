@@ -46,6 +46,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 internal static class Launcher
 {
@@ -181,8 +182,13 @@ internal static class Launcher
     /// <summary>
     /// Mirror a failure into Documents. Best-effort and silent: this runs when
     /// something has already gone wrong, and must not add a second problem.
+    ///
+    /// <paramref name="forIt"/> is the part written for whoever the customer
+    /// forwards this to, not for the customer: the exact thing to do about
+    /// this particular failure. It stays out of the dialog, where it would be
+    /// noise to a pharmacy user who cannot act on it anyway.
     /// </summary>
-    private static string WriteErrorLog(string message, string detail)
+    private static string WriteErrorLog(string message, string detail, string forIt)
     {
         var file = ErrorLogFile();
         if (file == null) return null;
@@ -215,6 +221,7 @@ internal static class Launcher
                 .AppendLine()
                 .AppendLine("Full technical log: " + SafeLogDir())
                 .AppendLine()
+                .Append(string.IsNullOrEmpty(forIt) ? string.Empty : forIt + Environment.NewLine)
                 .AppendLine("What to do: send this file to your IT contact. It has everything they")
                 .AppendLine("need. Nothing here is confidential beyond the file paths you chose.")
                 .AppendLine()
@@ -261,6 +268,36 @@ internal static class Launcher
      * ---------------------------------------------------------------- */
 
     /// <summary>
+    /// What the customer's IT contact needs, for the failures where there is
+    /// something specific for them to do.
+    ///
+    /// The application cannot add this exclusion itself: it needs
+    /// administrator rights the counter user does not have, Tamper Protection
+    /// can refuse it even elevated, and an unsigned exe adding itself to the
+    /// antivirus exclusion list is precisely the behaviour that gets an exe
+    /// blocked. So the command is written down for somebody who can run it.
+    /// </summary>
+    private static string NoteForIt(Exception err)
+    {
+        if (!IsAccessDenied(err)) return null;
+
+        return new StringBuilder()
+            .AppendLine("For IT — antivirus, or a copy of the application that was still running,")
+            .AppendLine("held this folder open. The launcher normally works around that on its own")
+            .AppendLine("by unpacking into the next folder along, so this message means every")
+            .AppendLine("folder was refused. To exclude it from Microsoft Defender, run once as")
+            .AppendLine("an administrator on this PC:")
+            .AppendLine()
+            .AppendLine("    Add-MpPreference -ExclusionPath '" + SafeAppFolder() + "'")
+            .AppendLine()
+            .AppendLine("The folder is inside the user's own profile, so it has to be excluded for")
+            .AppendLine("each Windows account that runs the application — or excluded centrally by")
+            .AppendLine("policy. With another antivirus product, add the same folder to whatever it")
+            .AppendLine("calls its exclusion list.")
+            .ToString();
+    }
+
+    /// <summary>
     /// A visible, readable failure. This is a GUI-subsystem binary with no
     /// console of its own, so printing is not enough: without a dialog the
     /// customer double-clicks and simply nothing happens, which is the single
@@ -287,7 +324,7 @@ internal static class Launcher
 
         // Both places, and the Documents copy first in importance: this is the
         // one the customer will be asked for.
-        var errorFile = WriteErrorLog(summary, err.ToString());
+        var errorFile = WriteErrorLog(summary, err.ToString(), NoteForIt(err));
 
         var body = new StringBuilder(summary)
             .AppendLine()
@@ -498,103 +535,264 @@ internal static class Launcher
      * Unpacking
      * ---------------------------------------------------------------- */
 
-    private static string RuntimeDir()
+    // Putting the finished tree in place is a directory rename, and on a real
+    // customer machine a directory rename is not reliably all-or-nothing.
+    // Real-time antivirus opens the files it has just watched being written,
+    // and for as long as it holds them Windows refuses the rename with
+    // "access is denied". That is transient, so the rename is retried. It is
+    // also sometimes not transient: a copy of the application still running
+    // out of the target folder holds its own files open for as long as it
+    // lives, and no amount of waiting will free them. So when a folder cannot
+    // be cleared the next one is used, and the launch costs a little disk
+    // instead of failing in front of the customer.
+    private const int InstallAttempts = 8;
+    private const int ClearAttempts = 3;
+    private const int RetryPauseMs = 400;
+    private const int RuntimeSlots = 8;
+
+    /// <summary>Scratch and superseded folders older than this are swept away.</summary>
+    private static readonly TimeSpan LeftoverMaxAge = TimeSpan.FromDays(1);
+
+    private const string StagingMark = ".unpacking-";
+    private const string StaleMark = ".stale-";
+
+    private static string RuntimeRoot()
     {
-        return Path.Combine(BaseDir(), "runtime", BuildInfo.Version + "-" + BuildInfo.PayloadHash.Substring(0, 12));
+        return Path.Combine(BaseDir(), "runtime");
     }
 
-    /// <summary>Delete unpacked copies of other builds. First run of a new version only.</summary>
-    private static void PruneOtherRuntimes(string keep)
+    /// <summary>The folder name this build unpacks into: its version and the identity of its payload.</summary>
+    private static string RuntimeName()
+    {
+        return BuildInfo.Version + "-" + BuildInfo.PayloadHash.Substring(0, 12);
+    }
+
+    /// <summary>
+    /// Where this build may live, in order of preference. The first name is the
+    /// one it normally uses; the rest exist only so that one folder Windows
+    /// will not let go of cannot stop the application starting.
+    /// </summary>
+    private static List<string> RuntimeCandidates()
+    {
+        var root = RuntimeRoot();
+        var name = RuntimeName();
+        var list = new List<string>();
+        list.Add(Path.Combine(root, name));
+        for (int slot = 2; slot <= RuntimeSlots; slot++) list.Add(Path.Combine(root, name + "-" + slot));
+        return list;
+    }
+
+    /// <summary>
+    /// True when this folder holds a complete unpack of this exact payload. The
+    /// marker file is written last and only once every file is on disk, so its
+    /// presence is what separates a finished tree from one abandoned half-way
+    /// by a crash, a full disk or an antivirus scan.
+    /// </summary>
+    private static bool IsUnpacked(string dir)
     {
         try
         {
-            var root = Path.Combine(BaseDir(), "runtime");
-            foreach (var dir in Directory.GetDirectories(root))
-            {
-                if (string.Equals(dir, keep, StringComparison.OrdinalIgnoreCase)) continue;
-                try
-                {
-                    Directory.Delete(dir, true);
-                    Log("removed old runtime " + Path.GetFileName(dir));
-                }
-                catch
-                {
-                    // another copy may still be running out of it
-                }
-            }
+            return File.Exists(Path.Combine(dir, InnerExe))
+                && File.ReadAllText(Path.Combine(dir, ".ready")).Trim() == BuildInfo.PayloadHash;
         }
         catch
         {
-            // housekeeping only — never fatal
+            return false;
         }
     }
 
     /// <summary>
     /// Make sure the application is unpacked, and return the path to its exe.
     ///
-    /// The marker file goes in last and only once every file is on disk, so an
-    /// unpack stopped by a crash, a full disk or an antivirus scan is redone
-    /// next time rather than half-used. The unpack happens in a sibling folder
-    /// and is renamed into place, so a second copy of the launcher starting at
-    /// the same moment cannot see a partial tree.
+    /// The unpack happens in a scratch folder and is renamed into place, so a
+    /// second copy of the launcher starting at the same moment cannot see a
+    /// partial tree.
     /// </summary>
     private static string EnsureUnpacked()
     {
-        var dir = RuntimeDir();
-        var exe = Path.Combine(dir, InnerExe);
-
-        Func<bool> alreadyGood = () =>
+        var candidates = RuntimeCandidates();
+        foreach (var candidate in candidates)
         {
-            try
-            {
-                return File.Exists(exe)
-                    && File.ReadAllText(Path.Combine(dir, ".ready")).Trim() == BuildInfo.PayloadHash;
-            }
-            catch
-            {
-                return false;
-            }
-        };
+            if (IsUnpacked(candidate)) return Path.Combine(candidate, InnerExe);
+        }
 
-        if (alreadyGood()) return exe;
+        Directory.CreateDirectory(RuntimeRoot());
 
-        Log("unpacking " + BuildInfo.Version + " to " + dir);
-        var staging = dir + ".unpacking-" + Process.GetCurrentProcess().Id;
+        // The process id alone is not unique enough: ids are reused, and a
+        // scratch folder left behind by a killed run can still be there under
+        // the same number.
+        var staging = Path.Combine(
+            RuntimeRoot(),
+            RuntimeName() + StagingMark + Process.GetCurrentProcess().Id + "-" + DateTime.UtcNow.Ticks);
+
+        Log("unpacking " + BuildInfo.Version + " to " + staging);
         SafeDelete(staging);
         Directory.CreateDirectory(staging);
 
-        int count = UnpackTo(ReadPayload(), staging);
-        File.WriteAllText(Path.Combine(staging, ".ready"), BuildInfo.PayloadHash);
-
-        // Two copies of the launcher can be started at the same moment on a
-        // machine that has never run this build. Whichever finishes first wins;
-        // the other must not delete the good tree the winner just put in place.
-        if (alreadyGood())
-        {
-            SafeDelete(staging);
-            Log("another copy unpacked it first — using that");
-            return exe;
-        }
-
-        SafeDelete(dir);
+        var installed = false;
         try
         {
-            Directory.Move(staging, dir);
+            int count = UnpackTo(ReadPayload(), staging);
+            File.WriteAllText(Path.Combine(staging, ".ready"), BuildInfo.PayloadHash);
+
+            foreach (var candidate in candidates)
+            {
+                // Two copies of the launcher can be started at the same moment
+                // on a machine that has never run this build. Whichever
+                // finishes first wins; the other uses the good tree the winner
+                // just put in place rather than deleting it.
+                if (IsUnpacked(candidate))
+                {
+                    Log("another copy unpacked it first - using " + candidate);
+                    return Path.Combine(candidate, InnerExe);
+                }
+
+                if (!TryInstall(staging, candidate)) continue;
+                installed = true;
+
+                Log("unpacked " + count + " file(s) into " + candidate);
+                PruneOtherRuntimes(candidate);
+
+                var exe = Path.Combine(candidate, InnerExe);
+                if (!File.Exists(exe))
+                {
+                    throw new FileNotFoundException(
+                        "The application did not unpack correctly: " + InnerExe + " is missing.");
+                }
+                return exe;
+            }
+
+            throw new IOException(
+                "The unpacked application could not be moved into place: Windows refused every folder "
+                + "under " + RuntimeRoot() + ". This is normally antivirus holding the new files open, "
+                + "or a copy of " + AppName + " that is still running.");
+        }
+        finally
+        {
+            if (!installed) SafeDelete(staging);
+        }
+    }
+
+    /// <summary>
+    /// Rename the finished tree into place, waiting out the refusals that pass.
+    /// Returns false rather than throwing when this folder cannot be used, so
+    /// the caller can try the next one.
+    /// </summary>
+    private static bool TryInstall(string staging, string target)
+    {
+        for (int attempt = 1; attempt <= InstallAttempts; attempt++)
+        {
+            if (Directory.Exists(target) && !TryClear(target)) return false;
+
+            try
+            {
+                Directory.Move(staging, target);
+                return true;
+            }
+            catch (Exception err)
+            {
+                Log("could not move the unpacked copy into " + target
+                    + " (attempt " + attempt + " of " + InstallAttempts + "): " + err.Message);
+                if (attempt < InstallAttempts) Thread.Sleep(RetryPauseMs);
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Get a folder that is in the way out of the way.
+    ///
+    /// It is renamed rather than deleted, because a folder that will not budge
+    /// is usually one an older copy is still running from, and a recursive
+    /// delete removes files one at a time until it reaches the first locked one
+    /// - turning a working install into a broken one. A rename either succeeds
+    /// completely or changes nothing.
+    /// </summary>
+    private static bool TryClear(string dir)
+    {
+        for (int attempt = 1; attempt <= ClearAttempts; attempt++)
+        {
+            if (MoveAsideAndDelete(dir)) return true;
+            if (attempt < ClearAttempts) Thread.Sleep(RetryPauseMs);
+        }
+        Log("could not clear " + dir + " - trying the next folder");
+        return false;
+    }
+
+    /// <summary>
+    /// Rename a folder aside and delete the renamed copy. Deleting it is
+    /// best-effort: once it is out from under its old name nothing looks for it
+    /// again, and a later launch sweeps up whatever is left. Never throws.
+    /// </summary>
+    private static bool MoveAsideAndDelete(string dir)
+    {
+        // Something already renamed aside needs no second name.
+        if (Path.GetFileName(dir).IndexOf(StaleMark, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            SafeDelete(dir);
+            return !Directory.Exists(dir);
+        }
+
+        try
+        {
+            var aside = dir + StaleMark + DateTime.UtcNow.Ticks;
+            Directory.Move(dir, aside);
+            SafeDelete(aside);
+            return true;
         }
         catch
         {
-            if (!alreadyGood()) throw;
-            SafeDelete(staging);
+            return false;
         }
+    }
 
-        Log("unpacked " + count + " file(s)");
-        PruneOtherRuntimes(dir);
-
-        if (!File.Exists(exe))
+    /// <summary>
+    /// Delete unpacked copies of other builds, and scratch folders nothing can
+    /// still be using.
+    ///
+    /// Other folders belonging to this build are left alone: one of them may be
+    /// what a copy started a moment ago is running from, and this housekeeping
+    /// has never been worth breaking a running application for.
+    /// </summary>
+    private static void PruneOtherRuntimes(string keep)
+    {
+        try
         {
-            throw new FileNotFoundException("The application did not unpack correctly: " + InnerExe + " is missing.");
+            var mine = RuntimeName();
+            foreach (var dir in Directory.GetDirectories(RuntimeRoot()))
+            {
+                if (string.Equals(dir, keep, StringComparison.OrdinalIgnoreCase)) continue;
+
+                var name = Path.GetFileName(dir);
+                var isScratch = name.IndexOf(StagingMark, StringComparison.OrdinalIgnoreCase) >= 0
+                             || name.IndexOf(StaleMark, StringComparison.OrdinalIgnoreCase) >= 0;
+                var isThisBuild = name.StartsWith(mine, StringComparison.OrdinalIgnoreCase);
+
+                // Only this build's scratch folders are ours to remove, and a
+                // scratch folder may belong to a launcher that is unpacking
+                // right now, so only cold ones are swept.
+                if (isThisBuild && !isScratch) continue;
+                if (isScratch && !IsColdEnoughToRemove(dir)) continue;
+
+                if (MoveAsideAndDelete(dir)) Log("removed old runtime " + name);
+            }
         }
-        return exe;
+        catch
+        {
+            // housekeeping only - never fatal
+        }
+    }
+
+    private static bool IsColdEnoughToRemove(string dir)
+    {
+        try
+        {
+            return DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) > LeftoverMaxAge;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void SafeDelete(string dir)
@@ -622,10 +820,16 @@ internal static class Launcher
             {
                 suggestion = "The disk is full. Free up about 500 MB and start the application again.";
             }
-            else if (err is UnauthorizedAccessException)
+            else if (IsAccessDenied(err))
             {
+                // Windows reports a blocked folder rename as an IOException
+                // whose message ends "is denied", not as UnauthorizedAccess, so
+                // both have to be recognised or the customer is told nothing
+                // useful about the one failure they can act on themselves.
                 suggestion = "Windows or your antivirus blocked the application from unpacking into your "
-                           + "user folder. Ask your IT contact to allow " + SafeRuntimePath() + ".";
+                           + "user folder. Close any copy of " + AppName + " that is still running and "
+                           + "start it again. If it keeps failing, ask your IT contact to allow "
+                           + SafeRuntimePath() + ".";
             }
             return Fail("unpacking the application", err, suggestion);
         }
@@ -662,10 +866,24 @@ internal static class Launcher
         }
     }
 
+    private static bool IsAccessDenied(Exception err)
+    {
+        if (err is UnauthorizedAccessException) return true;
+        var text = err.Message ?? string.Empty;
+        return err is IOException && text.IndexOf("is denied", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     private static string SafeRuntimePath()
     {
-        try { return Path.Combine(BaseDir(), "runtime"); }
-        catch { return @"%LOCALAPPDATA%\" + AppDirName + @"\runtime"; }
+        try { return RuntimeRoot(); }
+        catch { return SafeAppFolder() + @"\runtime"; }
+    }
+
+    /// <summary>The folder the application owns, or its name if none was found.</summary>
+    private static string SafeAppFolder()
+    {
+        try { return BaseDir(); }
+        catch { return @"%LOCALAPPDATA%\" + AppDirName; }
     }
 
     /// <summary>

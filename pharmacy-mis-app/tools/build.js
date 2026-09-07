@@ -351,9 +351,15 @@ function main() {
   console.log('Then re-run npm run release-test and regenerate the SHA-256.\n');
 }
 
-try {
-  main();
-} catch (err) {
-  console.error('\nBuild failed: ' + (err && err.message ? err.message : err));
-  process.exit(1);
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    console.error('\nBuild failed: ' + (err && err.message ? err.message : err));
+    process.exit(1);
+  }
 }
+
+// Shared with tools/check-unpack-recovery.js, which builds a small stand-in
+// launcher exactly the way this build makes the real one.
+module.exports = { main, findCsc, packFolder, TRAILER_MAGIC };
