@@ -1,5 +1,10 @@
 node_modules/
-dist/
 build/
 assets/icon.ico
 .chromium-cache/
+
+# The release exe and its checksum are committed (via Git LFS); see the root
+# .gitignore and .gitattributes.
+dist/*
+!dist/Pharmacy-MIS.exe
+!dist/Pharmacy-MIS.exe.sha256

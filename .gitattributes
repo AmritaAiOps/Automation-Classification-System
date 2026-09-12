@@ -1,0 +1,6 @@
+# The release exe is ~265 MB — over GitHub's 100 MB per-file limit — so it is
+# stored with Git LFS. Run `git lfs install` once per machine before cloning.
+pharmacy-mis-app/dist/*.exe filter=lfs diff=lfs merge=lfs -text
+
+# The checksum is compared byte-for-byte; keep its line endings untouched.
+pharmacy-mis-app/dist/*.sha256 -text
