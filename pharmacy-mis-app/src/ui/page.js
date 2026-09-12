@@ -416,21 +416,34 @@ const form = {
       dryRun: $('dryRun').checked,
     };
   },
-  save() {
-    try {
-      localStorage.setItem(STATE_KEY, JSON.stringify({
-        archiveRoot: $('archiveRoot').value,
-        inputFolder: $('inputFolder').value,
-        filePRQ: $('filePRQ').value,
-        filePO: $('filePO').value,
-        fileGRN: $('fileGRN').value,
-        mode,
-      }));
-    } catch (e) { /* storage may be unavailable */ }
+  values() {
+    return {
+      archiveRoot: $('archiveRoot').value,
+      inputFolder: $('inputFolder').value,
+      filePRQ: $('filePRQ').value,
+      filePO: $('filePO').value,
+      fileGRN: $('fileGRN').value,
+      mode,
+    };
   },
-  restore() {
-    let s = null;
-    try { s = JSON.parse(localStorage.getItem(STATE_KEY) || 'null'); } catch (e) { s = null; }
+  /**
+   * Saved on the server, not in localStorage. The window's origin carries a
+   * fresh port on every launch, so a localStorage entry never survived one —
+   * which is exactly why the archive root kept coming back empty.
+   *
+   * Kept in localStorage as well, purely so a reload within this same launch
+   * is instant and works even if the save request is still in flight.
+   */
+  save() {
+    const values = form.values();
+    try { localStorage.setItem(STATE_KEY, JSON.stringify(values)); } catch (e) { /* storage may be unavailable */ }
+    clearTimeout(form._saveTimer);
+    form._saveTimer = setTimeout(() => {
+      api('/api/settings', values).catch(() => { /* not remembering is not fatal */ });
+    }, 300);
+  },
+  /** Fill the form in from whatever was last saved. Server first — it is the copy that outlives a launch. */
+  apply(s) {
     if (!s) return;
     $('archiveRoot').value = s.archiveRoot || '';
     $('inputFolder').value = s.inputFolder || '';
@@ -438,6 +451,11 @@ const form = {
     $('filePO').value = s.filePO || '';
     $('fileGRN').value = s.fileGRN || '';
     if (s.mode) setMode(s.mode);
+  },
+  restore() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(STATE_KEY) || 'null'); } catch (e) { s = null; }
+    form.apply(s);
   },
 };
 
@@ -882,6 +900,12 @@ $('runBtn').onclick = async () => {
     reportDateIso = s.reportDate;
     $('todayDisplay').textContent = s.todayDisplay;
     $('reportDateDisplay').textContent = s.reportDateDisplay;
+
+    // The server's copy is the one that survives a restart, so it wins over
+    // whatever localStorage had — but only where it actually holds something,
+    // so a fresh install does not wipe the fields restore() just filled in.
+    if (s.settings && Object.keys(s.settings).length) form.apply({ ...form.values(), ...s.settings });
+
     if (!$('reportDate').value) { $('reportDate').value = s.reportDate; }
 
     // A window reload while a Sign In had already succeeded (but Run had not

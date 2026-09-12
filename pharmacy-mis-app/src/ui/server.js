@@ -8,6 +8,7 @@ const { resolveLayout, dateFromName, getPreviousCalendarDay, getToday, formatPor
 const { page } = require('./page');
 const { log } = require('../core/appdata');
 const { loadSavedUsername, saveUsername, clearSavedUsername } = require('../core/credentials');
+const { loadSettings, saveSettings } = require('../core/settings');
 const portalSession = require('../core/portalSession');
 const { makeLogger, LOGIN_FAILURE } = require('../portalRun');
 
@@ -322,7 +323,16 @@ const routes = {
       // the window restore that state if it reconnects mid-flow.
       signedIn: portalSession.isActive(),
       signedInUsername: portalSession.activeUsername(),
+      // The Dashboard's own choices, which used to live in the page's
+      // localStorage and so were lost every launch — the server picks a new
+      // port each time, and that made a new empty store each time.
+      settings: loadSettings(),
     };
+  },
+
+  /** Remember the Dashboard's choices for next launch. Fire-and-forget from the page. */
+  async 'POST /api/settings'(body) {
+    return { ok: true, settings: saveSettings(body) };
   },
 };
 
