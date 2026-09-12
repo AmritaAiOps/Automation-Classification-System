@@ -150,7 +150,15 @@ async function findFieldByLabel(page, labelText, { exact = false } = {}) {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const want = norm(label);
     const matches = (text) => (wantExact ? norm(text) === want : norm(text).includes(want));
-    const visible = (el) => !!(el && el.offsetParent !== null && !el.disabled);
+    // offsetParent alone is not enough: a field inside a collapsed panel can
+    // still report one while occupying no space at all, and a field like that
+    // is one Puppeteer refuses to click ("Node is either not clickable or not
+    // an Element"). Require an actual box before calling anything visible.
+    const visible = (el) => {
+      if (!el || el.disabled || el.offsetParent === null) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
 
     // 1. <label for="id"> or a field nested inside the label
     for (const lab of document.querySelectorAll('label')) {
@@ -203,6 +211,25 @@ async function findFieldByLabel(page, labelText, { exact = false } = {}) {
   return el;
 }
 
+/**
+ * Put the caret in a field and type into it.
+ *
+ * Deliberately never uses ElementHandle.click(), which drives a real mouse at
+ * the element's coordinates and therefore fails outright on anything it cannot
+ * scroll into view or that has no box — the sidebar search sits in a scrolling
+ * panel and was doing exactly that. Focusing through the DOM and then typing on
+ * the keyboard produces the same keystrokes for the page without depending on
+ * where the field happens to be on screen.
+ */
+async function focusAndType(page, handle, text) {
+  await page.evaluate((el) => {
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    el.focus();
+    if ('value' in el) el.value = '';
+  }, handle);
+  await page.keyboard.type(text, { delay: 15 });
+}
+
 /** Set a form field's value the way a framework-controlled input expects — through the native setter, so React/Angular/Vue see the change. */
 async function setInputValue(page, handle, value) {
   await page.evaluate((el, val) => {
@@ -228,6 +255,52 @@ async function clickButtonByText(page, label) {
       }
     }
     return false;
+  }, label);
+}
+
+/**
+ * Click an entry in the navigation menu — a search result or a menu leaf.
+ *
+ * Separate from clickButtonByText because a menu entry is usually not a button:
+ * in this portal's sidebar the search results come back as list items, and
+ * clickButtonByText's button/anchor selector would miss them entirely while the
+ * wait that precedes it (which does look at list items) reported a match. That
+ * mismatch is silent — it reads as "the page could not be located".
+ *
+ * Picks the deepest element whose text matches, so that a click lands on the
+ * entry itself rather than the panel containing it, and prefers an exact match
+ * over a partial one: "Purchase Report Pharmacy Detail" must not lose to some
+ * container that happens to hold it alongside every other menu item.
+ */
+async function clickMenuItemByText(page, label) {
+  return page.evaluate((text) => {
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const want = norm(text);
+    const boxed = (el) => {
+      const r = el.getBoundingClientRect();
+      return el.offsetParent !== null && r.width > 0 && r.height > 0;
+    };
+
+    const candidates = [...document.querySelectorAll(
+      'a, li, td, span, div, [role="option"], [role="menuitem"], [role="treeitem"]',
+    )].filter((el) => norm(el.textContent).includes(want) && boxed(el));
+    if (!candidates.length) return false;
+
+    const exact = candidates.filter((el) => norm(el.textContent) === want);
+    const pool = exact.length ? exact : candidates;
+    // Fewest descendants = closest to the text itself.
+    pool.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+
+    // An anchor inside the entry is the thing actually wired to navigate.
+    const target = pool[0].tagName === 'A' ? pool[0] : (pool[0].querySelector('a') || pool[0]);
+    target.scrollIntoView({ block: 'center', inline: 'nearest' });
+
+    // Menus driven by script often listen for mousedown rather than click, so
+    // send the whole sequence instead of click() alone.
+    for (const type of ['mouseover', 'mousedown', 'mouseup', 'click']) {
+      target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+    return true;
   }, label);
 }
 
@@ -506,6 +579,68 @@ async function assertSessionAlive(page) {
  * ------------------------------------------------------------------ */
 
 /**
+ * Whether the report itself is on screen, as opposed to merely a menu entry
+ * naming it. The portal titles each report page with its own name, and puts the
+ * date fields every one of them needs on that page, so the two together
+ * separate an opened report from a sidebar that merely mentions one.
+ */
+async function reportPageLooksOpen(page, reportLabel) {
+  return page.evaluate((label) => {
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const want = norm(label);
+    const boxed = (el) => {
+      const r = el.getBoundingClientRect();
+      return el.offsetParent !== null && r.width > 0 && r.height > 0;
+    };
+
+    const titled = [...document.querySelectorAll('h1, h2, h3, h4, caption, legend, td, div, span, b, font')]
+      .some((el) => el.children.length === 0 && norm(el.textContent) === want && boxed(el));
+    const hasDateField = [...document.querySelectorAll('input')]
+      .some((el) => /date/i.test([el.name, el.id, el.placeholder].join(' ')) && boxed(el));
+
+    return titled || hasDateField;
+  }, reportLabel);
+}
+
+/**
+ * A short description of what the page actually offered, appended to a
+ * navigation failure. Without it "could not be located" says nothing about
+ * whether the menu was missing, the search returned nothing, or the report was
+ * sitting in a frame this code never looked inside.
+ */
+async function describePage(page) {
+  try {
+    const facts = await page.evaluate(() => {
+      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+      const boxed = (el) => {
+        const r = el.getBoundingClientRect();
+        return el.offsetParent !== null && r.width > 0 && r.height > 0;
+      };
+      const menuish = [...document.querySelectorAll('a, li, [role="menuitem"], [role="treeitem"]')]
+        .filter((el) => el.children.length === 0 && boxed(el) && norm(el.textContent))
+        .map((el) => norm(el.textContent))
+        .filter((t) => t.length < 60);
+      return {
+        url: location.href,
+        frames: [...document.querySelectorAll('iframe, frame')].map((f) => f.getAttribute('src') || '(no src)'),
+        inputs: document.querySelectorAll('input').length,
+        sample: [...new Set(menuish)].slice(0, 12),
+      };
+    });
+
+    const bits = [` Page was ${facts.url}, with ${facts.inputs} input field(s).`];
+    if (facts.frames.length) {
+      bits.push(` It contains ${facts.frames.length} frame(s) (${facts.frames.slice(0, 3).join(', ')})`
+        + ' — the report may live inside one, which this automation does not yet look into.');
+    }
+    if (facts.sample.length) bits.push(` Menu entries visible: ${facts.sample.join(' | ')}.`);
+    return bits.join('');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Open a report by name. Prefers a navigation search box, if the portal shell
  * has one (the video shows one) — types the report's label and clicks the
  * matching suggestion. Falls back to clicking a matching menu item directly.
@@ -520,8 +655,8 @@ async function navigateToReport(page, reportLabel, log) {
 
     let opened = false;
     if (searchBox) {
-      await searchBox.click({ clickCount: 3 });
-      await searchBox.type(reportLabel, { delay: 15 });
+      log.debug('typing the report name into the menu search');
+      await focusAndType(page, searchBox, reportLabel);
       await page.waitForFunction(
         (label) => {
           const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -532,16 +667,34 @@ async function navigateToReport(page, reportLabel, log) {
         { timeout: 8000 },
         reportLabel,
       ).catch(() => {});
-      opened = await clickButtonByText(page, reportLabel);
-      if (!opened) { await page.keyboard.press('Enter').catch(() => {}); opened = true; }
+      opened = await clickMenuItemByText(page, reportLabel)
+        || await clickButtonByText(page, reportLabel);
+
+      // Enter is a last resort, and unlike before it is not taken on trust:
+      // the portal has to actually show the report before this counts as open.
+      if (!opened) {
+        log.debug('no result was clickable — trying Enter');
+        await page.keyboard.press('Enter').catch(() => {});
+        await page.waitForNetworkIdle({ idleTime: 800, timeout: TIMEOUTS.reportLoad }).catch(() => null);
+        opened = await reportPageLooksOpen(page, reportLabel);
+      }
     } else {
-      opened = await clickButtonByText(page, reportLabel);
+      log.debug('no menu search box found — looking for the entry directly');
+      opened = await clickMenuItemByText(page, reportLabel)
+        || await clickButtonByText(page, reportLabel);
     }
 
-    if (!opened) throw new Error(`${reportLabel} page could not be located.`);
+    if (!opened) throw new Error(`${reportLabel} page could not be located.${await describePage(page)}`);
 
     await page.waitForNetworkIdle({ idleTime: 800, timeout: TIMEOUTS.reportLoad }).catch(() => null);
     await assertSessionAlive(page);
+
+    // Clicking something is not the same as the report having opened. Saying so
+    // here, while the menu is still the thing that went wrong, beats failing
+    // later on a missing date field with no hint of why it is missing.
+    if (!await reportPageLooksOpen(page, reportLabel)) {
+      log.warn(`${reportLabel}: the entry was clicked but the report form has not appeared yet`);
+    }
   } catch (err) {
     if (/page could not be located/i.test(err.message) || /session expired/i.test(err.message)) throw err;
     throw new Error(`${reportLabel} page could not be located: ${err.message}`);
