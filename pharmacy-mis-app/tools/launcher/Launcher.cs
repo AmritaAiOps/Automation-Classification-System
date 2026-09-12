@@ -553,8 +553,20 @@ internal static class Launcher
     /// <summary>Scratch and superseded folders older than this are swept away.</summary>
     private static readonly TimeSpan LeftoverMaxAge = TimeSpan.FromDays(1);
 
-    private const string StagingMark = ".unpacking-";
-    private const string StaleMark = ".stale-";
+    // These two suffixes are deliberately short. Both are appended to a runtime
+    // folder name, so every character here is a character taken away from the
+    // 260 Windows allows a full path — and the deepest files in the payload are
+    // Chromium's, which leave little to spare. A scratch name that is much
+    // longer than the installed name is the worst kind: the application unpacks
+    // on one machine and fails on another whose user name is a few letters
+    // longer, at the unpack step only. Keep the marks and their suffixes brief.
+    private const string StagingMark = ".tmp-";
+    private const string StaleMark = ".old-";
+
+    // What those two were called before they were shortened. A machine that ran
+    // an earlier build can still have folders under these names.
+    private const string LegacyStagingMark = ".unpacking-";
+    private const string LegacyStaleMark = ".stale-";
 
     private static string RuntimeRoot()
     {
@@ -620,10 +632,11 @@ internal static class Launcher
 
         // The process id alone is not unique enough: ids are reused, and a
         // scratch folder left behind by a killed run can still be there under
-        // the same number.
+        // the same number. Eight hex characters of a fresh Guid settle that in
+        // a fraction of the width the process id and a tick count took.
         var staging = Path.Combine(
             RuntimeRoot(),
-            RuntimeName() + StagingMark + Process.GetCurrentProcess().Id + "-" + DateTime.UtcNow.Ticks);
+            RuntimeName() + StagingMark + Guid.NewGuid().ToString("N").Substring(0, 8));
 
         Log("unpacking " + BuildInfo.Version + " to " + staging);
         SafeDelete(staging);
@@ -726,8 +739,10 @@ internal static class Launcher
     /// </summary>
     private static bool MoveAsideAndDelete(string dir)
     {
-        // Something already renamed aside needs no second name.
-        if (Path.GetFileName(dir).IndexOf(StaleMark, StringComparison.OrdinalIgnoreCase) >= 0)
+        // Something already renamed aside needs no second name — and giving it
+        // one would only push the files inside it closer to the 260-character
+        // limit that has to be cleared to delete them.
+        if (IsStaleName(Path.GetFileName(dir)))
         {
             SafeDelete(dir);
             return !Directory.Exists(dir);
@@ -735,7 +750,7 @@ internal static class Launcher
 
         try
         {
-            var aside = dir + StaleMark + DateTime.UtcNow.Ticks;
+            var aside = dir + StaleMark + Guid.NewGuid().ToString("N").Substring(0, 8);
             Directory.Move(dir, aside);
             SafeDelete(aside);
             return true;
@@ -764,8 +779,7 @@ internal static class Launcher
                 if (string.Equals(dir, keep, StringComparison.OrdinalIgnoreCase)) continue;
 
                 var name = Path.GetFileName(dir);
-                var isScratch = name.IndexOf(StagingMark, StringComparison.OrdinalIgnoreCase) >= 0
-                             || name.IndexOf(StaleMark, StringComparison.OrdinalIgnoreCase) >= 0;
+                var isScratch = IsScratchName(name);
                 var isThisBuild = name.StartsWith(mine, StringComparison.OrdinalIgnoreCase);
 
                 // Only this build's scratch folders are ours to remove, and a
@@ -781,6 +795,28 @@ internal static class Launcher
         {
             // housekeeping only - never fatal
         }
+    }
+
+    /// <summary>
+    /// True for a folder name this or any earlier launcher used as scratch. The
+    /// retired marks are still listed because a machine that ran an older build
+    /// can have folders under the old names, and they earn the same protection
+    /// from being deleted while a launcher may still be writing into them.
+    /// </summary>
+    private static bool IsScratchName(string name)
+    {
+        return IsStaleName(name) || HasMark(name, StagingMark) || HasMark(name, LegacyStagingMark);
+    }
+
+    /// <summary>True for a folder already renamed aside, under either the current or the retired mark.</summary>
+    private static bool IsStaleName(string name)
+    {
+        return HasMark(name, StaleMark) || HasMark(name, LegacyStaleMark);
+    }
+
+    private static bool HasMark(string name, string mark)
+    {
+        return name.IndexOf(mark, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static bool IsColdEnoughToRemove(string dir)

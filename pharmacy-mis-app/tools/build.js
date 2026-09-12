@@ -52,6 +52,9 @@ const EXE = path.join(DIST, EXE_NAME);
 const REFERENCE = path.join(ROOT, '..', 'reference', 'Daily Report for coding.xlsx');
 const CHROMIUM_CACHE = path.join(ROOT, '.chromium-cache');
 
+/** The browser in .chromium-cache/ that is downloaded but never shipped — see step 5. */
+const SKIPPED_BROWSER = 'chrome-headless-shell';
+
 /** Written at the end of the exe so the launcher can find its own payload. */
 const TRAILER_MAGIC = 'PHMISPL1';
 
@@ -239,7 +242,10 @@ function main() {
     );
   }
   console.log('  found ' + path.relative(ROOT, chromeExe));
-  console.log('  ' + human(dirSize(CHROMIUM_CACHE)) + ' to be added as a resource');
+  // chrome-headless-shell is only there when Puppeteer happened to download it.
+  const skippedDir = path.join(CHROMIUM_CACHE, SKIPPED_BROWSER);
+  const shippedCache = dirSize(CHROMIUM_CACHE) - (fs.existsSync(skippedDir) ? dirSize(skippedDir) : 0);
+  console.log('  ' + human(shippedCache) + ' to be added as a resource');
 
   // ---- 5. assemble the Electron application ------------------------------
   step('Assemble the Electron application');
@@ -258,8 +264,21 @@ function main() {
   // this file for why. src/scraper/index.js's resolveChromiumExecutablePath()
   // looks for exactly this folder, under process.resourcesPath, at runtime.
   const resourcesDir = path.join(UNPACKED, 'resources');
-  fs.cpSync(CHROMIUM_CACHE, path.join(resourcesDir, 'chromium-cache'), { recursive: true });
-  console.log('  copied .chromium-cache -> ' + path.relative(ROOT, resourcesDir) + '\\chromium-cache');
+  // "npx puppeteer browsers install chrome" also lays down chrome-headless-shell
+  // beside chrome. Nothing here drives it: startSession() launches with
+  // headless:'new', which is the full chrome binary, and
+  // resolveChromiumExecutablePath() looks for chrome.exe — the shell's
+  // executable is named chrome-headless-shell.exe and can never match. Shipping
+  // it would add ~270 MB and, worse, the longest paths in the payload: its
+  // folder names are long enough that the launcher's scratch folder blows past
+  // Windows' 260-character limit while unpacking (see StagingMark in
+  // tools/launcher/Launcher.cs).
+  fs.cpSync(CHROMIUM_CACHE, path.join(resourcesDir, 'chromium-cache'), {
+    recursive: true,
+    filter: (src) => path.basename(src) !== SKIPPED_BROWSER,
+  });
+  console.log('  copied .chromium-cache -> ' + path.relative(ROOT, resourcesDir) + '\\chromium-cache'
+    + ' (without ' + SKIPPED_BROWSER + ')');
 
   // ---- 6. trim -----------------------------------------------------------
   step('Trim resources the application never loads');
