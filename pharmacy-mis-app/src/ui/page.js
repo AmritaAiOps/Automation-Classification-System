@@ -64,6 +64,21 @@ function page(token) {
   .left  { border-right: 1px solid var(--line); overflow-y: auto; padding: 14px; }
   .right { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
 
+  /*
+   * The Dashboard (archive root, source files, manual run, results, log) is
+   * not just visually de-emphasised before sign-in — it is not rendered at
+   * all, so there is nothing there to click or read until Amrita HIS
+   * authentication succeeds. body.locked is the default in the markup below,
+   * so this is what a cold launch shows before any script has run, not just
+   * after JS decides to hide something.
+   */
+  body.locked main { display: flex; align-items: center; justify-content: center; overflow-y: auto; padding: 24px; }
+  body.locked .left { border-right: none; width: 440px; max-width: 100%; flex: 0 0 auto; overflow: visible; padding: 0; }
+  body.locked .left > section.card:not(#loginCard) { display: none; }
+  body.locked .right { display: none; }
+  body.locked #loginCard { padding: 22px 24px; }
+  body.locked #loginCard > h2 { font-size: 13px; margin-bottom: 16px; }
+
   section.card {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; padding: 12px; margin-bottom: 12px;
@@ -191,9 +206,33 @@ function page(token) {
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   [hidden] { display: none !important; }
+
+  /* ---- login card ---- */
+  .datepair { display: flex; gap: 10px; margin-bottom: 10px; }
+  .datepair .box { flex: 1; background: #0e141b; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }
+  .datepair .box .k { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-faint); }
+  .datepair .box .v { font: 600 15px/1.4 var(--mono); color: var(--ink); margin-top: 2px; }
+  .datepair .box.report .v { color: var(--accent); }
+  label.checkline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-dim); margin: 8px 0; cursor: pointer; }
+  input[type=password] {
+    width: 100%; background: #0e141b; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 9px; font: 12px/1.4 var(--mono);
+  }
+  input[type=password]:focus { outline: none; border-color: var(--accent); }
+  .login-status { font-size: 12px; margin-top: 8px; min-height: 16px; }
+  .login-status.ok { color: var(--ok); }
+  .login-status.err { color: var(--err); white-space: pre-wrap; }
+  .summary {
+    display: grid; grid-template-columns: 1fr auto; gap: 4px 10px;
+    font-size: 12px; color: var(--ink-dim); margin-top: 8px;
+  }
+  .summary .k { color: var(--ink-faint); }
+  .summary .v { color: var(--ok); font-weight: 600; text-align: right; }
+  .summary .v.big { color: var(--accent); font-size: 15px; }
 </style>
 </head>
-<body>
+<body class="locked">
 
 <header>
   <h1>Pharmacy MIS</h1>
@@ -205,6 +244,46 @@ function page(token) {
 
 <main>
   <div class="left">
+    <section class="card" id="loginCard">
+      <h2>Amrita HIS Login</h2>
+      <div class="datepair">
+        <div class="box">
+          <div class="k">Today's date</div>
+          <div class="v" id="todayDisplay">—</div>
+        </div>
+        <div class="box report">
+          <div class="k">Reports to process</div>
+          <div class="v" id="reportDateDisplay">—</div>
+        </div>
+      </div>
+      <div id="loginFields">
+        <label class="field">
+          <span>Username</span>
+          <input type="text" id="hisUsername" placeholder="Amrita HIS username" autocomplete="off" autocapitalize="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input type="password" id="hisPassword" placeholder="Amrita HIS password" autocomplete="new-password">
+        </label>
+        <label class="checkline">
+          <input type="checkbox" id="rememberUsername" checked>
+          Remember username
+        </label>
+        <button class="primary" id="signInBtn">Sign In</button>
+      </div>
+      <div id="runFields" hidden>
+        <div class="login-status ok" id="signedInAs"></div>
+        <button class="primary" id="runPortalBtn">Run</button>
+        <button class="ghost" id="signOutBtn" style="width:100%;margin-top:6px">Sign out / use a different account</button>
+      </div>
+      <div class="login-status" id="loginStatus"></div>
+      <div class="summary" id="runSummary" hidden></div>
+      <p class="hint" id="loginHint">
+        Puppeteer signs in to Amrita HIS with these credentials — nothing to type into a browser
+        window yourself. Once signed in and verified, <b>Run</b> pulls the day's reports.
+      </p>
+    </section>
+
     <section class="card">
       <h2>1 · Archive root</h2>
       <label class="field">
@@ -218,7 +297,7 @@ function page(token) {
         <span>Report date</span>
         <div class="row">
           <input type="date" id="reportDate">
-          <button id="todayBtn" class="ghost" title="Set to today">Today</button>
+          <button id="todayBtn" class="ghost" title="Set to yesterday — the reports to process today">Yesterday</button>
         </div>
       </label>
       <div class="paths" id="paths">Choose a root and a date to see where this run will read and write.</div>
@@ -267,7 +346,11 @@ function page(token) {
     </section>
 
     <section class="card">
-      <h2>3 · Run</h2>
+      <h2>3 · Run (manual / preview)</h2>
+      <p class="hint" style="margin:0 0 8px">
+        For files already pulled or exported by hand. The <b>Sign In &amp; Run</b> button above
+        is the normal path — it pulls straight from Amrita HIS and runs this same pipeline.
+      </p>
       <label class="field" style="margin-bottom:8px">
         <span style="display:flex;align-items:center;gap:6px;margin:0">
           <input type="checkbox" id="dryRun" style="flex:0 0 auto">
@@ -465,7 +548,174 @@ function setBusy(busy) {
   $('spin').hidden = !busy;
   $('runBtn').disabled = busy;
   $('runBtn').textContent = busy ? 'Running…' : 'Run daily report';
+  // Duplicate-run protection: only one pipeline write / Puppeteer session at
+  // a time, so every entry point is locked together.
+  pipelineBusy = busy;
+  $('runPortalBtn').disabled = busy;
+  $('runPortalBtn').textContent = busy ? 'Running…' : 'Run';
+  $('signOutBtn').disabled = busy;
+  $('signInBtn').disabled = busy || signingIn;
 }
+
+/* ---------- Amrita HIS sign-in (two steps: Sign In, then Run) ---------- */
+let signingIn = false;
+let pipelineBusy = false;
+let reportDateIso = null; // set from the server at boot — the single source of truth for "yesterday"
+let lastRunWasPortal = false; // which button started the run in flight, for the run-end handler below
+
+function setLoginStatus(text, kind) {
+  const el = $('loginStatus');
+  el.textContent = text;
+  el.className = 'login-status' + (kind ? ' ' + kind : '');
+}
+
+function showLoginFields() {
+  $('loginFields').hidden = false;
+  $('runFields').hidden = true;
+}
+function showRunFields(username) {
+  $('loginFields').hidden = true;
+  $('runFields').hidden = false;
+  $('signedInAs').textContent = '✓ Signed in as ' + username + ' — verified';
+}
+
+/**
+ * The Dashboard (archive root, source files, manual run, results, log) stays
+ * unreachable — not merely dimmed — until Amrita HIS authentication succeeds
+ * at least once this launch (body starts with the "locked" class already on
+ * it, before any script runs). Once unlocked it stays unlocked for the rest
+ * of this run of the app: re-authenticating for a second day's pull happens
+ * through the same login card, now sitting in its normal place in the
+ * sidebar, not by re-locking the whole window.
+ */
+function unlockDashboard() {
+  document.body.classList.remove('locked');
+}
+
+function setSigningIn(busy) {
+  signingIn = busy;
+  $('signInBtn').disabled = busy || pipelineBusy;
+  $('signInBtn').textContent = busy ? 'Authenticating…' : 'Sign In';
+  $('hisUsername').disabled = busy;
+  $('hisPassword').disabled = busy;
+}
+
+function renderPoBrowserSummary(result) {
+  const box = $('runSummary');
+  if (!result || !result.poBrowser) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML =
+    '<span class="k">Purchase Report Pharmacy Detail</span><span class="v">✓ Downloaded</span>'
+    + '<span class="k">Received Items Pharmacy</span><span class="v">✓ Downloaded</span>'
+    + '<span class="k">Pharmacy PO Browser — searched</span><span class="v">✓ Complete</span>'
+    + '<span class="k">Total PO Browser rows</span><span class="v big">' + esc(result.poBrowser.totalRows) + '</span>';
+}
+
+/**
+ * The username field must reflect ONLY this app's own remembered value
+ * (%LOCALAPPDATA%\PharmacyMIS\credentials.json — never the password), never
+ * whatever a browser's or the operating system's own form-autofill decides
+ * to suggest for a field named "username"/"password". Both fields are
+ * therefore forced to a known state here rather than trusted to already be
+ * blank: username is cleared and then set from our own store if there is
+ * one, and the password is unconditionally cleared and left that way — nothing
+ * in this app ever writes a value into it programmatically.
+ */
+async function loadSavedUsername() {
+  $('hisUsername').value = '';
+  $('hisPassword').value = '';
+  try {
+    const r = await api('/api/saved-username');
+    if (r.username) {
+      $('hisUsername').value = r.username;
+      $('rememberUsername').checked = true;
+    }
+  } catch (e) { /* not fatal — the user can just type it */ }
+  // Autofill (browser or OS-level) can act asynchronously, after this
+  // function has already run — the password is enforced empty one more time
+  // shortly after, without depending on any one moment being "late enough".
+  setTimeout(() => { $('hisPassword').value = ''; }, 400);
+}
+
+/* Step 1: Sign In — authenticates and verifies, but does not pull any report yet. */
+$('signInBtn').onclick = async () => {
+  const username = $('hisUsername').value.trim();
+  const password = $('hisPassword').value;
+
+  // Sign In only needs credentials — archive root and report date are
+  // Dashboard settings the user has not even seen yet at this point (the
+  // Dashboard is still locked), so they are chosen after signing in and read
+  // fresh when Run is clicked, not asked for here.
+  if (!username) { setLoginStatus('Enter your Amrita HIS username.', 'err'); return; }
+  if (!password) { setLoginStatus('Enter your Amrita HIS password.', 'err'); return; }
+
+  const payload = {
+    username,
+    password,
+    rememberUsername: $('rememberUsername').checked,
+  };
+  // The password has been read into the outgoing request; drop it from the
+  // form and from this closure's reach as soon as it is no longer needed.
+  $('hisPassword').value = '';
+
+  setSigningIn(true);
+  setLoginStatus('Authenticating with Amrita HIS…');
+
+  try {
+    // /api/login's JSON response is { ok: true } on success — no "error"
+    // field, so api() resolves normally — or throws with the portal's own
+    // message on failure (see api()'s definition above: any "error" field
+    // makes it throw), which is exactly what the catch below wants.
+    await api('/api/login', payload);
+    setLoginStatus('✓ Logged in to Amrita HIS — verified', 'ok');
+    showRunFields(username);
+    unlockDashboard();
+  } catch (err) {
+    // err.message is already a complete, specific sentence (e.g. "Incorrect
+    // username or password.") — no need to prefix it with anything, and the
+    // Dashboard stays locked and the fields stay ready for another attempt
+    // until it reads correctly.
+    setLoginStatus('✗ ' + err.message, 'err');
+  } finally {
+    setSigningIn(false);
+  }
+};
+
+/* Cancel a verified-but-not-yet-run sign-in, e.g. to switch accounts. */
+$('signOutBtn').onclick = async () => {
+  try { await api('/api/cancel-login'); } catch (err) { /* best effort */ }
+  showLoginFields();
+  setLoginStatus('');
+};
+
+/* Step 2: Run — pulls the three Amrita HIS reports through the session Sign In left waiting, for whichever archive root and report date are set on the Dashboard right now. */
+$('runPortalBtn').onclick = async () => {
+  const archiveRoot = $('archiveRoot').value.trim();
+  if (!archiveRoot) { setStatus('Choose the archive root folder first.', 'err'); return; }
+
+  lastRunWasPortal = true;
+  setBusy(true);
+  setLoginStatus('Running Amrita HIS automation…', 'ok');
+  renderPoBrowserSummary(null);
+  $('openMaster').disabled = true;
+  $('showMaster').disabled = true;
+
+  try {
+    // The definitive outcome — including a login-vs-automation failure
+    // distinction via result.stage — arrives over the SSE 'run-end' event
+    // (handled in connect() below): /api/run-portal's JSON response also
+    // carries an "error" field on a failed run, which api() treats as a
+    // request failure, so it is not read here at all.
+    await api('/api/run-portal', {
+      archiveRoot,
+      reportDate: $('reportDate').value.trim() || reportDateIso,
+    });
+  } catch (err) {
+    setBusy(false);
+    setLoginStatus('✗ ' + err.message, 'err');
+    showLoginFields(); // the session is gone either way — /api/run-portal always closes it
+  }
+};
 
 /* ---------- live event stream ---------- */
 function connect() {
@@ -483,6 +733,21 @@ function connect() {
     const r = JSON.parse(e.data);
     setBusy(false);
     finishRun(r);
+    if (lastRunWasPortal) {
+      // /api/run-portal always closes its session before responding, win or
+      // lose, so either way there is nothing left to Run again without
+      // signing in fresh.
+      showLoginFields();
+      lastRunWasPortal = false;
+      if (r.ok) {
+        setLoginStatus('✓ Automation completed. Sign in again to run once more.', 'ok');
+        renderPoBrowserSummary(r);
+      } else if (r.stage === 'login') {
+        setLoginStatus('✗ Amrita HIS session problem: ' + r.error, 'err');
+      } else {
+        setLoginStatus('✗ Report automation failed: ' + r.error, 'err');
+      }
+    }
   });
 }
 
@@ -577,9 +842,10 @@ $('showMaster').onclick = async () => {
 };
 
 $('todayBtn').onclick = () => {
-  const d = new Date();
-  $('reportDate').value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  refreshPaths();
+  // "Yesterday" — the previous CALENDAR day, computed once by the server
+  // (core/paths.js getPreviousCalendarDay) and reused everywhere: this field,
+  // the Amrita HIS date filters, and the inputs folder all agree with it.
+  if (reportDateIso) { $('reportDate').value = reportDateIso; refreshPaths(); }
 };
 
 /* ---------- run ---------- */
@@ -588,6 +854,9 @@ $('runBtn').onclick = async () => {
   if (!payload.archiveRoot) { setStatus('Choose the archive root folder first.', 'err'); return; }
   if (!payload.reportDate) { setStatus('Set the report date first.', 'err'); return; }
   form.save();
+  lastRunWasPortal = false;
+  renderPoBrowserSummary(null);
+  setLoginStatus('');
   setBusy(true);
   setStatus('Running…');
   try {
@@ -606,21 +875,47 @@ $('runBtn').onclick = async () => {
 /* ---------- boot ---------- */
 (async () => {
   form.restore();
-  if (!$('reportDate').value) $('todayBtn').click();
   connect();
-  refreshPaths();
+  loadSavedUsername();
   try {
     const s = await api('/api/status');
+    reportDateIso = s.reportDate;
+    $('todayDisplay').textContent = s.todayDisplay;
+    $('reportDateDisplay').textContent = s.reportDateDisplay;
+    if (!$('reportDate').value) { $('reportDate').value = s.reportDate; }
+
+    // A window reload while a Sign In had already succeeded (but Run had not
+    // been clicked yet) should still show the waiting session rather than a
+    // blank login form — the browser is still open on the server side.
+    if (s.signedIn && s.signedInUsername) {
+      setLoginStatus('✓ Logged in to Amrita HIS — verified', 'ok');
+      showRunFields(s.signedInUsername);
+      unlockDashboard();
+    }
+
     const b = $('scraperBadge');
     if (s.scraper.available) { b.textContent = 'portal pull: ready'; b.className = 'badge live'; }
-    else { b.textContent = 'portal pull: admin machine only'; b.className = 'badge off'; }
+    else {
+      b.textContent = 'portal pull: unavailable'; b.className = 'badge off';
+      $('signInBtn').disabled = true;
+      $('loginHint').textContent = 'Puppeteer is not part of this build — use the manual run below with files pulled or exported by hand.';
+      // No Amrita HIS to sign in to in this build — the mapping/manual half
+      // must stay fully usable on its own, so there is nothing to gate here.
+      unlockDashboard();
+    }
     appendMeta('Pharmacy MIS ' + s.version + ' — Node ' + s.node);
+    appendMeta('Today ' + s.todayDisplay + ' — processing reports for ' + s.reportDateDisplay);
     appendMeta(s.scraper.available
       ? 'Portal pull available.'
       : 'Portal pull (Puppeteer) is not part of this build — map files pulled or exported by hand.');
   } catch (err) {
+    // The footer this normally goes to is inside the Dashboard, which is
+    // exactly what is hidden at this point — so this has to reach the user
+    // through the login card instead, or it would be invisible.
     setStatus('Could not reach the app backend: ' + err.message, 'err');
+    setLoginStatus('✗ Could not reach the app backend: ' + err.message, 'err');
   }
+  refreshPaths();
 })();
 </script>
 </body>

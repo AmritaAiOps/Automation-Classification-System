@@ -213,6 +213,30 @@ async function main() {
   check('E left null when no PO file', onlyPrq.fields.E, null);
   check('E reported as skipped', onlyPrq.write.changes.find((c) => c.field === 'E').action, 'skipped (no value from source)');
 
+  section('Embedded UI page');
+  // src/ui/page.js writes the client-side script as TEXT inside its own
+  // outer template literal. A raw \n there (instead of \\n) is consumed by
+  // the outer literal's own escaping and lands in the served page as an
+  // actual newline inside what the browser parses as a quoted string — a
+  // syntax error the browser hits at parse time, which nothing else here
+  // catches: `require('../src/ui/page')` only proves page.js itself is valid
+  // JS, never the script text it serves. This broke silently once — the
+  // whole window stayed blank (no dates, no log, no connection badge) — so
+  // the client script is pulled out and checked for valid syntax on its own.
+  const { page: renderPage } = require('../src/ui/page');
+  const html = renderPage('selftest-token');
+  const scriptMatch = /<script>([\s\S]*)<\/script>/.exec(html);
+  truthy('embedded page has a <script> block', !!scriptMatch);
+  if (scriptMatch) {
+    try {
+      // eslint-disable-next-line no-new, no-new-func
+      new Function(scriptMatch[1]);
+      truthy('client-side script has valid syntax', true);
+    } catch (err) {
+      truthy('client-side script has valid syntax', false, err.message);
+    }
+  }
+
   console.log(`\n${'='.repeat(56)}`);
   console.log(`${pass} passed, ${fail} failed`);
   console.log(`temp artifacts under ${os.tmpdir()} (pharmis-*)`);

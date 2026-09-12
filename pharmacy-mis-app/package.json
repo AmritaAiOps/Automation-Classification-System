@@ -19,7 +19,8 @@
     "check-unpack-recovery": "node tools/check-unpack-recovery.js"
   },
   "dependencies": {
-    "exceljs": "4.4.0"
+    "exceljs": "4.4.0",
+    "puppeteer": "25.10.0"
   },
   "devDependencies": {
     "electron": "33.4.11",
@@ -51,7 +52,7 @@
       "icon": "assets/icon.ico",
       "legalTrademarks": "Sudhamayi Enterprise Pvt. Ltd.",
       "requestedExecutionLevel": "asInvoker",
-      "signAndEditExecutable": true
+      "signAndEditExecutable": false
     }
   }
 }

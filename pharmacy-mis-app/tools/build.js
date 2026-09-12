@@ -15,11 +15,20 @@
  *   2  generate the application icon
  *   3  run the source self-test — shipping wrong figures is worse than not
  *      shipping
- *   4  have electron-builder assemble the Electron application
- *   5  trim what the application never loads
- *   6  pack it into one file and compress it with LZMS
- *   7  compile the launcher and append the payload to it
- *   8  verify the artefact and write its SHA-256
+ *   4  confirm Puppeteer's Chromium is present in .chromium-cache/, so the
+ *      Amrita HIS automation has a browser to drive on the customer's machine
+ *   5  have electron-builder assemble the Electron application, then copy
+ *      .chromium-cache/ into its resources folder ourselves — NOT through
+ *      electron-builder's own extraResources, which tries to code-sign every
+ *      .exe it copies (including Chromium's own helpers) and pulls in a
+ *      winCodeSign download that fails outright on a non-elevated, non-
+ *      Developer-Mode Windows account (it needs SeCreateSymbolicLinkPrivilege
+ *      to unpack that archive, and this application signs nothing anyway —
+ *      see "Code signing" in README.md)
+ *   6  trim what the application never loads
+ *   7  pack it into one file and compress it with LZMS
+ *   8  compile the launcher and append the payload to it
+ *   9  verify the artefact and write its SHA-256
  *
  * The launcher is C# compiled by csc.exe, which ships with Windows — see
  * tools/launcher/Launcher.cs for why it is not the Node single executable it
@@ -41,6 +50,7 @@ const UNPACKED = path.join(BUILD, 'win-unpacked');
 const EXE_NAME = 'Pharmacy-MIS.exe';
 const EXE = path.join(DIST, EXE_NAME);
 const REFERENCE = path.join(ROOT, '..', 'reference', 'Daily Report for coding.xlsx');
+const CHROMIUM_CACHE = path.join(ROOT, '.chromium-cache');
 
 /** Written at the end of the exe so the launcher can find its own payload. */
 const TRAILER_MAGIC = 'PHMISPL1';
@@ -48,13 +58,42 @@ const TRAILER_MAGIC = 'PHMISPL1';
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
 let stepNo = 0;
-const TOTAL = 8;
+const TOTAL = 9;
 function step(text) {
   stepNo += 1;
   console.log('\n[' + stepNo + '/' + TOTAL + '] ' + text);
 }
 
 const human = (bytes) => (bytes / 1024 / 1024).toFixed(1) + ' MB';
+
+/** Mirrors src/scraper/index.js's own scan — finds the one Chrome build .chromium-cache/ holds. */
+function findChromeExecutable(dir) {
+  if (!fs.existsSync(dir)) return null;
+  const stack = [dir];
+  while (stack.length) {
+    const current = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (/^chrome\.exe$/i.test(entry.name) || entry.name === 'chrome') return full;
+    }
+  }
+  return null;
+}
+
+function dirSize(dir) {
+  let total = 0;
+  (function walk(d) {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else total += fs.statSync(full).size;
+    }
+  }(dir));
+  return total;
+}
 
 function run(cmd, args, opts) {
   return execFileSync(cmd, args, { stdio: 'inherit', cwd: ROOT, ...opts });
@@ -187,7 +226,22 @@ function main() {
     throw new Error('The source self-test failed — refusing to build.');
   }
 
-  // ---- 4. assemble the Electron application ------------------------------
+  // ---- 4. confirm Puppeteer's Chromium is present -------------------------
+  step("Confirm Puppeteer's Chromium is present");
+  const chromeExe = findChromeExecutable(CHROMIUM_CACHE);
+  if (!chromeExe) {
+    throw new Error(
+      'No Chrome executable found under ' + CHROMIUM_CACHE + '. '
+      + 'Run "npx puppeteer browsers install chrome" first (this is what npm install '
+      + 'does too — .puppeteerrc.cjs pins the download here instead of the OS cache '
+      + 'so it can be shipped inside the exe). Refusing to build without a browser for '
+      + 'the Amrita HIS automation to drive.',
+    );
+  }
+  console.log('  found ' + path.relative(ROOT, chromeExe));
+  console.log('  ' + human(dirSize(CHROMIUM_CACHE)) + ' to be added as a resource');
+
+  // ---- 5. assemble the Electron application ------------------------------
   step('Assemble the Electron application');
   const builderCli = require.resolve('electron-builder/out/cli/cli.js');
   const env = { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' };
@@ -199,7 +253,15 @@ function main() {
     throw new Error('Missing ' + path.join(UNPACKED, 'Pharmacy MIS.exe'));
   }
 
-  // ---- 5. trim -----------------------------------------------------------
+  // Copied in after electron-builder is done, not through its own
+  // extraResources — see the note above the step numbering at the top of
+  // this file for why. src/scraper/index.js's resolveChromiumExecutablePath()
+  // looks for exactly this folder, under process.resourcesPath, at runtime.
+  const resourcesDir = path.join(UNPACKED, 'resources');
+  fs.cpSync(CHROMIUM_CACHE, path.join(resourcesDir, 'chromium-cache'), { recursive: true });
+  console.log('  copied .chromium-cache -> ' + path.relative(ROOT, resourcesDir) + '\\chromium-cache');
+
+  // ---- 6. trim -----------------------------------------------------------
   step('Trim resources the application never loads');
   let trimmed = 0;
   const locales = path.join(UNPACKED, 'locales');
@@ -215,7 +277,7 @@ function main() {
   if (fs.existsSync(elevate)) { trimmed += fs.statSync(elevate).size; fs.rmSync(elevate); }
   console.log('  removed ' + human(trimmed) + ' of unused locales and helpers');
 
-  // ---- 6. payload --------------------------------------------------------
+  // ---- 7. payload --------------------------------------------------------
   step('Pack and compress the application');
   const { raw, fileCount } = packFolder(UNPACKED);
   const rawFile = path.join(BUILD, 'app.raw');
@@ -231,7 +293,7 @@ function main() {
   const payloadHash = crypto.createHash('sha256').update(payload).digest('hex');
   fs.rmSync(rawFile);
 
-  // ---- 7. the launcher ---------------------------------------------------
+  // ---- 8. the launcher ---------------------------------------------------
   step('Compile the launcher and append the payload');
 
   // Version and identity come from package.json. The C# compiler turns these
@@ -287,7 +349,7 @@ function main() {
   fs.appendFileSync(EXE, payload);
   fs.appendFileSync(EXE, trailer);
 
-  // ---- 8. verify ---------------------------------------------------------
+  // ---- 9. verify ---------------------------------------------------------
   step('Verify the built exe');
 
   const subsystem = readSubsystem(EXE);

@@ -21,18 +21,29 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runDailyReport } = require('../pipeline');
+const { runWithPortalPull } = require('../portalRun');
 const { log, logFile, errorLogFile } = require('../core/appdata');
+const { getPreviousCalendarDay } = require('../core/paths');
 
 const USAGE = `
 Pharmacy MIS — daily report mapping (command line)
 
   --root <folder>     archive root, the folder that holds Pharmacy-MIS/  (required)
   --date <date>       report date, YYYY-MM-DD or DD-MM-YYYY
-                      (defaults to the date in the inputs folder name)
+                      (defaults to yesterday — the previous calendar day)
   --inputs <folder>   dated inputs folder to scan
   --prq <file>        PRQ Details file      -> columns C, D
   --po <file>         PO Detail Report file -> columns E, F, G
   --grn <file>        Purchase/GRN file     -> columns H, I, J
+  --username <name>   Amrita HIS username — pulls the day's reports from the
+                      portal with Puppeteer instead of reading --inputs/--prq/
+                      --po/--grn. The password is never a command-line
+                      argument: set it in the PHARMACY_MIS_PASSWORD
+                      environment variable before running (e.g. for a
+                      scheduled task, store it with Task Scheduler's own
+                      "run whether user is logged on or not" credential, or
+                      an env var set on the task's Actions tab — never in the
+                      task's Arguments field).
   --dry-run           compute everything, write nothing
   --quiet             only print warnings and errors
   --json              print the full result as JSON instead of a log
@@ -77,6 +88,7 @@ function parseArgs(argv) {
       case '--prq': out.files.PRQ = path.resolve(value); break;
       case '--po': out.files.PO = path.resolve(value); break;
       case '--grn': out.files.GRN = path.resolve(value); break;
+      case '--username': out.username = value; break;
       case '--out': out.outFile = path.resolve(value); break;
       case '--expect': out.expect = value; break;
       default: throw new Error('Unknown option ' + arg);
@@ -112,7 +124,29 @@ async function runCli(opts) {
       say(entry.level.toUpperCase().padEnd(5) + ' ' + '  '.repeat(entry.indent || 0) + entry.message);
     };
 
-  const result = await runDailyReport(opts, sink);
+  // The portal pull always needs an explicit date (there is no inputs
+  // folder/filename to infer one from), so it alone defaults to yesterday —
+  // the previous calendar day. Manual/file-based mode keeps its existing
+  // behaviour: --date if given, otherwise inferred from the inputs folder or
+  // file names (see resolveDate() in src/pipeline.js), unchanged.
+  let result;
+  if (opts.username) {
+    const password = process.env.PHARMACY_MIS_PASSWORD;
+    if (!password) {
+      throw new Error(
+        '--username was given but the PHARMACY_MIS_PASSWORD environment variable is not set. '
+        + 'The password is never accepted as a command-line argument.',
+      );
+    }
+    const reportDate = opts.reportDate || getPreviousCalendarDay().iso;
+    result = await runWithPortalPull(
+      { archiveRoot: opts.archiveRoot, reportDate, credentials: { username: opts.username, password }, dryRun: !!opts.dryRun },
+      sink,
+    );
+  } else {
+    result = await runDailyReport(opts, sink);
+  }
+
   if (result.ok) {
     log.info('cli run succeeded');
   } else {
@@ -125,8 +159,8 @@ async function runCli(opts) {
         '',
         'What went wrong:  ' + result.error,
         'Archive folder:   ' + (opts.archiveRoot || '(not set)'),
-        'Report date:      ' + (opts.reportDate || '(taken from the folder name)'),
-        'Inputs folder:    ' + (opts.inputFolder || '(not set)'),
+        'Report date:      ' + (result.date || opts.reportDate || '(could not be resolved)'),
+        'Inputs folder:    ' + (opts.username ? '(Amrita HIS portal pull)' : (opts.inputFolder || '(not set)')),
       ].join('\n'),
       (result.log || [])
         .map((e) => e.level.toUpperCase().padEnd(5) + ' ' + '  '.repeat(e.indent || 0) + e.message)
@@ -145,6 +179,7 @@ async function runCli(opts) {
     say(Object.entries(result.fields).map(([k, v]) => k + '=' + (v == null ? '-' : v)).join('  '));
     say((result.write.written ? 'saved: ' : 'preview: ') + result.layout.masterFile);
     say('row ' + result.write.row + ' ' + result.write.mode + ', ' + result.write.totalRows + ' date row(s)');
+    if (result.poBrowser) say('Pharmacy PO Browser total rows: ' + result.poBrowser.totalRows);
   }
 
   return result.ok ? 0 : 1;
@@ -202,6 +237,27 @@ async function runSelfTest(opts) {
     const html = page('selftest-token');
     record('embedded UI page present', html.length > 5000 && html.includes('Pharmacy MIS'));
     record('UI page has no external resources', !/https?:\/\//i.test(html));
+
+    // page.js writes the client-side script as text INSIDE its own outer
+    // template literal — a raw \n (rather than \\n) in that text is consumed
+    // by the OUTER literal's own escaping and lands in the served page as an
+    // actual newline character inside what the browser sees as a single- or
+    // double-quoted string, which is a syntax error the browser hits at
+    // parse time. Nothing above catches that: `node -c` on this file only
+    // validates page.js itself, never the JS text it serves. Once this broke
+    // silently — dates, the log and the connection badge all stayed blank —
+    // so the client script is pulled out and syntax-checked on its own here.
+    const scriptMatch = /<script>([\s\S]*)<\/script>/.exec(html);
+    record('client <script> block present', !!scriptMatch);
+    if (scriptMatch) {
+      try {
+        // eslint-disable-next-line no-new, no-new-func
+        new Function(scriptMatch[1]);
+        record('client-side script has valid syntax', true);
+      } catch (err) {
+        record('client-side script has valid syntax', false, err.message);
+      }
+    }
   } catch (err) {
     record('embedded UI page present', false, err.message);
   }

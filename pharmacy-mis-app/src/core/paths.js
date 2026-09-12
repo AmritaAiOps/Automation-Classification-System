@@ -75,6 +75,42 @@ function resolveLayout(root, dateInput) {
   };
 }
 
+/**
+ * The single source of truth for "which day are we processing".
+ *
+ * The person running this app opens it TODAY to process YESTERDAY's reports,
+ * so the default report date is always the previous CALENDAR day — not
+ * "24 hours ago", which would drift across a DST change, and not naive
+ * day-number arithmetic, which breaks on the 1st of every month. Built on the
+ * same Date.UTC parts used by fromParts()/parseReportDate() above, so this and
+ * every other date in the app agree on what a "day" is.
+ *
+ * Every caller — the UI, the Amrita HIS date fields, the inputs folder, the
+ * pipeline, the logs — must derive the report date from this one function
+ * (or be handed the value it already produced) rather than computing
+ * "yesterday" independently.
+ */
+function getPreviousCalendarDay(reference = new Date()) {
+  const prev = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate() - 1);
+  return fromParts(prev.getFullYear(), prev.getMonth() + 1, prev.getDate());
+}
+
+/** Today, in the same shape as parseReportDate()/getPreviousCalendarDay(). */
+function getToday(reference = new Date()) {
+  return fromParts(reference.getFullYear(), reference.getMonth() + 1, reference.getDate());
+}
+
+/**
+ * The Amrita HIS portal's own date format, DD/MM/YYYY — e.g. "08/09/2026".
+ * Accepts anything parseReportDate() accepts (an ISO string, the portal's own
+ * DD-MM-YYYY, or a Date), so it can be handed the reportDate computed once at
+ * the top of a run.
+ */
+function formatPortalDate(input) {
+  const d = parseReportDate(input);
+  return `${String(d.day).padStart(2, '0')}/${String(d.month).padStart(2, '0')}/${d.year}`;
+}
+
 /** Pull a YYYY-MM-DD out of a folder or file name, if one is there. */
 function dateFromName(name) {
   const m = /(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})/.exec(path.basename(String(name || '')));
@@ -91,4 +127,13 @@ function ensureDir(dir) {
   return dir;
 }
 
-module.exports = { resolveLayout, parseReportDate, dateFromName, ensureDir, MONTH_NAMES };
+module.exports = {
+  resolveLayout,
+  parseReportDate,
+  dateFromName,
+  ensureDir,
+  MONTH_NAMES,
+  getPreviousCalendarDay,
+  getToday,
+  formatPortalDate,
+};
