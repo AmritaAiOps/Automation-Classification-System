@@ -145,8 +145,63 @@ function sleep(ms) {
  * ------------------------------------------------------------------ */
 
 /** Find the input/select/textarea associated with a visible label's text. */
+/**
+ * Every frame of the page, the main document first.
+ *
+ * This portal keeps its URL at index.jsp while swapping reports into the page,
+ * which is the shape of an application that puts its real content in a frame.
+ * A field search that only ever looked at the top-level document would find the
+ * sidebar and nothing else — no date fields, no Run Report button — which is
+ * exactly the "Could not set From Date." that follows a report opening fine.
+ *
+ * Frames are queried in order and the first match wins, so a form in the main
+ * document still behaves exactly as it did before.
+ */
+function allFrames(page) {
+  const main = page.mainFrame();
+  return [main, ...page.frames().filter((f) => f !== main)];
+}
+
+/**
+ * Run an in-page finder against every frame, returning the first element found
+ * along with the frame holding it. Handles stay bound to their own frame, so
+ * anything done with one afterwards has to go through handle.evaluate() rather
+ * than page.evaluate() — a handle from a child frame is not something the main
+ * frame's realm can accept.
+ */
+/**
+ * Run a predicate in each frame, stopping at the first that returns truthy.
+ * What "click the thing that says X" means when the page is a frameset: try
+ * every document until one of them has it.
+ */
+async function someFrame(page, pageFunction, ...args) {
+  for (const frame of allFrames(page)) {
+    try {
+      if (await frame.evaluate(pageFunction, ...args)) return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+async function findInFrames(page, pageFunction, ...args) {
+  for (const frame of allFrames(page)) {
+    let handle;
+    try {
+      handle = await frame.evaluateHandle(pageFunction, ...args);
+    } catch {
+      continue; // a frame can navigate or be cross-origin mid-search
+    }
+    const el = handle.asElement();
+    if (el) return el;
+    await handle.dispose().catch(() => {});
+  }
+  return null;
+}
+
 async function findFieldByLabel(page, labelText, { exact = false } = {}) {
-  const handle = await page.evaluateHandle((label, wantExact) => {
+  return findInFrames(page, (label, wantExact) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const want = norm(label);
     const matches = (text) => (wantExact ? norm(text) === want : norm(text).includes(want));
@@ -202,13 +257,6 @@ async function findFieldByLabel(page, labelText, { exact = false } = {}) {
 
     return null;
   }, labelText, exact);
-
-  const el = handle.asElement();
-  if (!el) {
-    await handle.dispose();
-    return null;
-  }
-  return el;
 }
 
 /**
@@ -222,28 +270,30 @@ async function findFieldByLabel(page, labelText, { exact = false } = {}) {
  * where the field happens to be on screen.
  */
 async function focusAndType(page, handle, text) {
-  await page.evaluate((el) => {
+  await handle.evaluate((el) => {
     if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'nearest' });
     el.focus();
     if ('value' in el) el.value = '';
-  }, handle);
+  });
+  // The keyboard belongs to the page and types wherever the focus is, so this
+  // reaches a field inside a frame without any extra ceremony.
   await page.keyboard.type(text, { delay: 15 });
 }
 
 /** Set a form field's value the way a framework-controlled input expects — through the native setter, so React/Angular/Vue see the change. */
-async function setInputValue(page, handle, value) {
-  await page.evaluate((el, val) => {
+async function setInputValue(handle, value) {
+  await handle.evaluate((el, val) => {
     const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
     setter.call(el, val);
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
-  }, handle, value);
+  }, value);
 }
 
 /** Click whatever on the page has visible text matching label (button, link, submit input). */
 async function clickButtonByText(page, label) {
-  return page.evaluate((text) => {
+  return someFrame(page, (text) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const want = norm(text);
     const els = document.querySelectorAll('button, input[type="submit"], input[type="button"], a, [role="button"]');
@@ -273,7 +323,7 @@ async function clickButtonByText(page, label) {
  * container that happens to hold it alongside every other menu item.
  */
 async function clickMenuItemByText(page, label) {
-  return page.evaluate((text) => {
+  return someFrame(page, (text) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const want = norm(text);
     const boxed = (el) => {
@@ -306,22 +356,38 @@ async function clickMenuItemByText(page, label) {
 
 /** Set a <select>, or a button/radio group, to the option whose text matches valueText. */
 async function selectDropdownValue(page, handle, valueText) {
-  const tag = await page.evaluate((el) => el.tagName, handle);
+  const tag = await handle.evaluate((el) => el.tagName);
   if (tag === 'SELECT') {
-    const ok = await page.evaluate((el, val) => {
+    const ok = await handle.evaluate((el, val) => {
       const norm = (s) => (s || '').trim().toLowerCase();
       const opt = [...el.options].find((o) => norm(o.textContent) === norm(val) || norm(o.value) === norm(val));
       if (!opt) return false;
       el.value = opt.value;
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
-    }, handle, valueText);
+    }, valueText);
     if (!ok) throw new Error(`option "${valueText}" not found in the dropdown`);
     return;
   }
-  await handle.click();
-  const clicked = await clickButtonByText(page, valueText);
+  await openControl(handle);
+  const clicked = await clickButtonByText(page, valueText) || await clickMenuItemByText(page, valueText);
   if (!clicked) throw new Error(`option "${valueText}" not found`);
+}
+
+/**
+ * Open a custom control from inside the page rather than by driving the mouse
+ * at it. ElementHandle.click() needs the element to have a box it can scroll to
+ * and aim at, and throws "Node is either not clickable or not an Element" when
+ * it does not — a form in a scrolling frame gives that no end of opportunities.
+ */
+async function openControl(handle) {
+  await handle.evaluate((el) => {
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    el.focus();
+    for (const type of ['mouseover', 'mousedown', 'mouseup', 'click']) {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  });
 }
 
 /**
@@ -334,15 +400,15 @@ async function selectAllOptions(page, labelText, log) {
   const field = await findFieldByLabel(page, labelText);
   if (!field) throw new Error(`field not found`);
 
-  const tag = await page.evaluate((el) => el.tagName, field);
+  const tag = await field.evaluate((el) => el.tagName);
 
   if (tag === 'SELECT') {
-    const count = await page.evaluate((el) => {
+    const count = await field.evaluate((el) => {
       const opts = [...el.options].filter((o) => o.value !== '');
       opts.forEach((o) => { o.selected = true; });
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return opts.length;
-    }, field);
+    });
     if (!count) throw new Error('the dropdown has no options to select');
     log.ok(`${labelText} = ALL (${count} option(s))`);
     return;
@@ -350,9 +416,11 @@ async function selectAllOptions(page, labelText, log) {
 
   // A custom widget: open it, then tick every option it reveals — preferring
   // the widget's own "select all" control if it has one.
-  await field.click().catch(() => {});
+  await openControl(field).catch(() => {});
   await sleep(200);
-  const result = await page.evaluate(() => {
+  // Evaluated through the field so the panel is looked for in the same document
+  // the field lives in, which is not the top one when the form is in a frame.
+  const result = await field.evaluate(() => {
     const panel = document.querySelector(
       '[role="listbox"]:not([hidden]), .dropdown-menu.show, .multiselect-dropdown, .p-multiselect-panel, .ant-select-dropdown',
     ) || document.body;
@@ -585,7 +653,7 @@ async function assertSessionAlive(page) {
  * separate an opened report from a sidebar that merely mentions one.
  */
 async function reportPageLooksOpen(page, reportLabel) {
-  return page.evaluate((label) => {
+  return someFrame(page, (label) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const want = norm(label);
     const boxed = (el) => {
@@ -723,10 +791,16 @@ async function setDateRange(page, fromIso, toIso, log) {
 }
 
 async function setDateFieldValue(page, handle, portalDateText) {
-  await handle.click({ clickCount: 3 });
-  await setInputValue(page, handle, '');
-  await handle.type(portalDateText, { delay: 15 });
+  // Typed rather than assigned: these are date pickers, and they keep their
+  // own state in sync off keystrokes. Tab afterwards commits the value the way
+  // leaving the field by hand does.
+  await focusAndType(page, handle, portalDateText);
   await page.keyboard.press('Tab').catch(() => {});
+
+  // A picker that reformats or rejects what was typed leaves something else
+  // behind, and finding that out here beats a report built on the wrong day.
+  const got = await handle.evaluate((el) => el.value);
+  if (!String(got || '').trim()) throw new Error('the field would not take the date');
 }
 
 async function selectReportFormat(page, format, log) {
@@ -747,9 +821,9 @@ async function selectReportFormat(page, format, log) {
 async function setLimit(page, value, log) {
   const field = await findFieldByLabel(page, 'limit');
   if (!field) throw new Error(`Could not set Limit to ${value}.`);
-  await field.click({ clickCount: 3 });
-  await setInputValue(page, field, String(value));
-  const got = await page.evaluate((el) => el.value, field);
+  await focusAndType(page, field, String(value));
+  await setInputValue(field, String(value));
+  const got = await field.evaluate((el) => el.value);
   if (String(got).trim() !== String(value)) {
     throw new Error(`Could not set Limit to ${value} (field now shows "${got}").`);
   }
@@ -757,12 +831,21 @@ async function setLimit(page, value, log) {
 }
 
 async function readTotalRows(page, log) {
-  await page.waitForFunction(
-    () => /total\s*rows/i.test(document.body.innerText),
-    { timeout: TIMEOUTS.search },
-  ).catch(() => {});
+  const readAll = async () => {
+    const texts = [];
+    for (const frame of allFrames(page)) {
+      try { texts.push(await frame.evaluate(() => document.body.innerText)); } catch { /* frame went away */ }
+    }
+    return texts.join('\n');
+  };
 
-  const text = await page.evaluate(() => document.body.innerText);
+  const deadline = Date.now() + TIMEOUTS.search;
+  let text = await readAll();
+  while (!/total\s*rows/i.test(text) && Date.now() < deadline) {
+    await sleep(400);
+    text = await readAll();
+  }
+
   const match = /total\s*rows\s*[:\-]?\s*(\d+)/i.exec(text);
   if (!match) throw new Error('Total rows value could not be located.');
 
