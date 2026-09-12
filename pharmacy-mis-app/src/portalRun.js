@@ -44,7 +44,21 @@ async function runWithPortalPull({ archiveRoot, reportDate, credentials, dryRun 
   return result;
 }
 
-const LOGIN_FAILURE = /^(Login failed|Incorrect username or password|Amrita HIS login page could not be loaded|Amrita HIS username and password are required)/i;
+/**
+ * Everything that means "the run never got past sign-in", so the UI can put the
+ * user back at the credentials form instead of blaming the report automation.
+ * These are the exact openings thrown by src/scraper/index.js's login() and
+ * describeUnreachable() — the two must be changed together.
+ */
+const LOGIN_FAILURE = new RegExp('^(' + [
+  'Login failed',
+  'Incorrect username or password',
+  'Could not reach Amrita HIS', // never connected: DNS, refused, timeout, certificate
+  'Connected to Amrita HIS, but its sign-in form was not found',
+  'Amrita HIS login page could not be loaded', // wording used before the messages above
+  'Amrita HIS username and password are required',
+  'Portal pull unavailable',
+].join('|') + ')', 'i');
 
 /** A minimal object matching core/logger.js's Logger surface, streaming straight to a plain sink function. */
 function loggerFns(sink) {

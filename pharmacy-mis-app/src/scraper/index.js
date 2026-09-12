@@ -66,8 +66,16 @@ const REPORTS = [
  * somewhere inside the app; it does not have to be the login URL itself.
  * Overridable so the admin machine can point at its real environment without
  * editing source.
+ *
+ * It has to be the HIS host (aefbd), not the Keycloak one (ahisfbd). Asking
+ * HIS for this page is what produces the 302 carrying client_id, redirect_uri
+ * and state into Keycloak, and it is that redirect_uri that brings the browser
+ * back into HIS once the credentials are accepted. Keycloak's own host answers
+ * nothing useful on its own — its root is a 503, and even when it answers,
+ * signing in there leaves the session at Keycloak rather than inside HIS.
  */
-const PORTAL_URL = process.env.AMRITA_HIS_URL || 'https://ahisfbd.amritahospitals.org/';
+const PORTAL_URL = process.env.AMRITA_HIS_URL
+  || 'https://aefbd.amritahospitals.org/his/Jsp/Core_Common/index.jsp?task=off';
 
 const TIMEOUTS = {
   navigation: 45000,
@@ -341,6 +349,39 @@ function movePortalFile(sourcePath, destDir, label, dateIso) {
  * Login
  * ------------------------------------------------------------------ */
 
+/** The host part of a URL, for logs that should not carry query strings around. */
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return url; }
+}
+
+/**
+ * Turn a failed navigation into something the person at the desk can act on.
+ * "Did not connect" and "connected but was refused" need to look different in
+ * the log: the first is theirs to fix (network, VPN, portal down), the second
+ * is not.
+ */
+function describeUnreachable(err) {
+  const raw = err && err.message ? err.message : String(err);
+  const host = hostOf(PORTAL_URL);
+
+  if (/ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ENOTFOUND|EAI_AGAIN/i.test(raw)) {
+    return `Could not reach Amrita HIS at ${host}: the address did not resolve. `
+      + 'Check the network connection, and the VPN if this portal needs one.';
+  }
+  if (/ERR_CONNECTION_REFUSED|ECONNREFUSED|ERR_CONNECTION_RESET|ECONNRESET/i.test(raw)) {
+    return `Could not reach Amrita HIS at ${host}: the connection was refused. `
+      + 'The portal may be down, or unreachable from this network.';
+  }
+  if (/timeout|ERR_TIMED_OUT|ETIMEDOUT/i.test(raw)) {
+    return `Could not reach Amrita HIS at ${host}: it did not answer in time. `
+      + 'The portal may be down or very slow, or unreachable from this network.';
+  }
+  if (/ERR_CERT|CERT_|SSL/i.test(raw)) {
+    return `Could not reach Amrita HIS at ${host}: its security certificate was rejected. ${raw}`;
+  }
+  return `Could not reach Amrita HIS at ${host}: ${raw}`;
+}
+
 /**
  * Fill and submit the real Amrita HIS sign-in form with the application-
  * supplied credentials. The user never sees or touches this browser window
@@ -353,18 +394,28 @@ async function login(page, credentials, log) {
       throw new Error('Amrita HIS username and password are required.');
     }
 
-    log.info('opening the Amrita HIS sign-in page');
+    log.info(`connecting to ${hostOf(PORTAL_URL)}`);
     try {
       await page.goto(PORTAL_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
     } catch (err) {
-      throw new Error(`Amrita HIS login page could not be loaded: ${err.message}`);
+      throw new Error(describeUnreachable(err));
     }
+    // Landing somewhere else is the expected case, not a problem: HIS answers
+    // with a redirect into Keycloak. Saying where it ended up is what separates
+    // "the portal is down" from "the portal is up and rejected the password"
+    // for whoever is reading the log afterwards.
+    log.ok(`connected — Amrita HIS answered, now at ${hostOf(page.url())}`);
 
     const userField = await page.waitForSelector(SELECTORS.login.username, { timeout: TIMEOUTS.login }).catch(() => null);
     const passField = userField && await page.$(SELECTORS.login.password);
     if (!userField || !passField) {
-      throw new Error('Amrita HIS login page could not be loaded: the sign-in form was not found.');
+      throw new Error(
+        'Connected to Amrita HIS, but its sign-in form was not found at '
+        + `${page.url()} — the portal may be showing a maintenance page, or its `
+        + 'sign-in page may have changed.',
+      );
     }
+    log.info('sign-in page reached — submitting credentials');
 
     // Filled via type(), not setInputValue()/evaluate() — Keycloak's own form
     // reads the value straight from the field on submit, and typing (rather
@@ -380,14 +431,14 @@ async function login(page, credentials, log) {
     const submit = await page.$(SELECTORS.login.submit);
     if (!submit) throw new Error('Amrita HIS login page could not be loaded: the sign-in button was not found.');
 
-    log.info('submitting sign-in form');
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'networkidle2', timeout: TIMEOUTS.login }).catch(() => null),
       submit.click(),
     ]);
 
+    log.info('checking whether the credentials were accepted');
     await verifyAuthentication(page, log);
-    log.ok('Authentication successful');
+    log.ok('Credentials accepted — signed in to Amrita HIS');
   } finally {
     close();
   }
