@@ -41,6 +41,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { ensureDir, formatPortalDate } = require('../core/paths');
 
 /** Reports whether the Puppeteer half is available in this build. */
@@ -51,6 +52,27 @@ function isAvailable() {
   } catch {
     return false;
   }
+}
+
+/**
+ * Load Puppeteer.
+ *
+ * It cannot be require()d: since v23 the package is ESM only ("type":
+ * "module"), and its own exports map points the "require" condition at the
+ * very same ESM file, so require() fails with ERR_REQUIRE_ESM while
+ * require.resolve() still happily returns the path. That asymmetry is worth
+ * knowing about — it is why isAvailable() above can answer true for a build
+ * that cannot actually load it.
+ *
+ * Resolved to a path and imported as a file URL rather than by bare specifier,
+ * because a Windows path is not a valid URL and import() demands one. Inside
+ * the packaged application this path lands within app.asar, which Electron's
+ * ESM loader reads correctly.
+ */
+async function loadPuppeteer() {
+  const entry = require.resolve('puppeteer');
+  const mod = await import(pathToFileURL(entry).href);
+  return mod.default || mod;
 }
 
 /** Shown in the UI's "portal pull" badge. Purely informational. */
@@ -728,8 +750,7 @@ function findChromeExecutable(dir) {
  * cancelling, or after an idle timeout.
  */
 async function startSession(credentials, log) {
-  // eslint-disable-next-line global-require
-  const puppeteer = require('puppeteer');
+  const puppeteer = await loadPuppeteer();
   const executablePath = resolveChromiumExecutablePath();
   const browser = await puppeteer.launch({
     // PHARMACY_MIS_HEADFUL=1 for a visible browser during selector work on the
