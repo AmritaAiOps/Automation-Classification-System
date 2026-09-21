@@ -141,26 +141,80 @@ const COLUMNS_FOR = { PRQ: 'C-D', PO: 'E-G', GRN: 'H-J' };
  * embedded in the inputs folder name, then the date on the source filenames.
  * Nothing falls back to "today" silently - a wrong date writes the wrong row.
  */
+/**
+ * What the source files themselves look like they are for — the inputs folder's
+ * name, the names of the files picked by hand, and the names of the files
+ * inside the folder being scanned.
+ *
+ * Every date found, not just the first: a folder holding a mix of days is worth
+ * saying out loud rather than silently taking whichever came back first.
+ */
+function inferDateFromNames(options) {
+  const found = [];
+  const note = (iso, source) => { if (iso) found.push({ iso, source }); };
+
+  if (options.inputFolder) {
+    note(dateFromName(options.inputFolder), `the inputs folder name "${path.basename(options.inputFolder)}"`);
+  }
+  for (const p of Object.values(options.files || {})) {
+    if (p) note(dateFromName(p), `the filename "${path.basename(p)}"`);
+  }
+  // The files inside a scanned folder count too. Without this, the commonest
+  // case of all — a folder of files named after the day they cover, picked
+  // whole — has nothing to compare the date field against.
+  if (options.inputFolder && fs.existsSync(options.inputFolder)) {
+    try {
+      for (const name of fs.readdirSync(options.inputFolder)) {
+        if (!SOURCE_EXT.has(path.extname(name).toLowerCase())) continue;
+        note(dateFromName(name), `the filename "${name}"`);
+      }
+    } catch { /* unreadable folder is collectCandidates' problem to report */ }
+  }
+
+  if (!found.length) return null;
+  const distinct = [...new Set(found.map((f) => f.iso))];
+  return { ...found[0], distinct };
+}
+
 function resolveDate(options, log) {
+  const inferred = inferDateFromNames(options);
+
   if (options.reportDate) {
     const d = parseReportDate(options.reportDate);
     log.info(`date taken from the date field: ${d.iso}`);
+
+    // The Date field wins, deliberately — filing a day's data under another
+    // date is sometimes what is wanted. But it is pre-filled with yesterday and
+    // remembered between runs, so it can just as easily be a date nobody chose,
+    // and the row it writes looks exactly like a right one. Hence saying so.
+    if (inferred && !inferred.distinct.includes(d.iso)) {
+      const other = inferred.distinct.length > 1
+        ? `the source files look like ${inferred.distinct.join(', ')}`
+        : `${inferred.source} says ${inferred.iso}`;
+      log.warn(
+        `the Date field says ${d.iso}, but ${other}. This run is being filed under ${d.iso}. `
+        + 'If that is not what you meant, change the Date field and run again.',
+      );
+    } else if (inferred && inferred.distinct.length > 1) {
+      log.warn(
+        `the source files are not all for the same day (${inferred.distinct.join(', ')}). `
+        + `This run is being filed under ${d.iso}.`,
+      );
+    }
     return d.iso;
   }
-  if (options.inputFolder) {
-    const fromFolder = dateFromName(options.inputFolder);
-    if (fromFolder) {
-      log.info(`date taken from the inputs folder name "${path.basename(options.inputFolder)}": ${fromFolder}`);
-      return fromFolder;
+
+  if (inferred) {
+    if (inferred.distinct.length > 1) {
+      throw new Error(
+        `The source files are for more than one day (${inferred.distinct.join(', ')}), so the report `
+        + 'date cannot be worked out from them. Enter the date you want in the Date field.',
+      );
     }
+    log.info(`date taken from ${inferred.source}: ${inferred.iso}`);
+    return inferred.iso;
   }
-  for (const p of Object.values(options.files || {})) {
-    const fromFile = p && dateFromName(p);
-    if (fromFile) {
-      log.info(`date taken from the filename "${path.basename(p)}": ${fromFile}`);
-      return fromFile;
-    }
-  }
+
   throw new Error(
     'Could not work out the report date. Either enter it in the Date field, or name the '
     + 'inputs folder after it (e.g. inputs/2026-08-08).',

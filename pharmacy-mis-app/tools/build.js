@@ -15,8 +15,10 @@
  *   2  generate the application icon
  *   3  run the source self-test — shipping wrong figures is worse than not
  *      shipping
- *   4  confirm Puppeteer's Chromium is present in .chromium-cache/, so the
- *      Amrita HIS automation has a browser to drive on the customer's machine
+ *   4  confirm Puppeteer's Chromium is present in .chromium-cache/ — downloading
+ *      it if it is not, since that folder is gitignored and so missing on a
+ *      fresh clone — so the Amrita HIS automation has a browser to drive on the
+ *      customer's machine
  *   5  have electron-builder assemble the Electron application, then copy
  *      .chromium-cache/ into its resources folder ourselves — NOT through
  *      electron-builder's own extraResources, which tries to code-sign every
@@ -84,6 +86,17 @@ function findChromeExecutable(dir) {
     }
   }
   return null;
+}
+
+/**
+ * Downloads the Chrome build Puppeteer expects into .chromium-cache/. Runs
+ * Puppeteer's own CLI, so the version it fetches is the one this Puppeteer
+ * release pins, and .puppeteerrc.cjs decides where it lands. Doing nothing when
+ * the browser is already there is the CLI's own behaviour.
+ */
+function installChromium() {
+  const cli = require.resolve('puppeteer/lib/puppeteer/node/cli.js');
+  run(process.execPath, [cli, 'browsers', 'install', 'chrome']);
 }
 
 function dirSize(dir) {
@@ -231,15 +244,25 @@ function main() {
 
   // ---- 4. confirm Puppeteer's Chromium is present -------------------------
   step("Confirm Puppeteer's Chromium is present");
-  const chromeExe = findChromeExecutable(CHROMIUM_CACHE);
+  let chromeExe = findChromeExecutable(CHROMIUM_CACHE);
   if (!chromeExe) {
-    throw new Error(
-      'No Chrome executable found under ' + CHROMIUM_CACHE + '. '
-      + 'Run "npx puppeteer browsers install chrome" first (this is what npm install '
-      + 'does too — .puppeteerrc.cjs pins the download here instead of the OS cache '
-      + 'so it can be shipped inside the exe). Refusing to build without a browser for '
-      + 'the Amrita HIS automation to drive.',
-    );
+    // .chromium-cache/ is a ~400 MB download, so it is gitignored and absent on
+    // a fresh clone — and on any machine where `npm install` ran with
+    // --ignore-scripts or PUPPETEER_SKIP_DOWNLOAD, which skips Puppeteer's own
+    // postinstall. Fetch it here rather than failing: the download is
+    // idempotent and is the only thing standing between a clean clone and a
+    // working build.
+    console.log('  not present — downloading it (npx puppeteer browsers install chrome)');
+    installChromium();
+    chromeExe = findChromeExecutable(CHROMIUM_CACHE);
+    if (!chromeExe) {
+      throw new Error(
+        'Still no Chrome executable under ' + CHROMIUM_CACHE + ' after running '
+        + '"puppeteer browsers install chrome". Run that command by hand to see why '
+        + '(usually no network, or a proxy blocking the Chrome for Testing download). '
+        + 'Refusing to build without a browser for the Amrita HIS automation to drive.',
+      );
+    }
   }
   console.log('  found ' + path.relative(ROOT, chromeExe));
   // chrome-headless-shell is only there when Puppeteer happened to download it.

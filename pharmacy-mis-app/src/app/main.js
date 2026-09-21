@@ -25,7 +25,7 @@
  */
 
 const path = require('path');
-const { log, pruneOldLogs, logFile, errorLogFile } = require('../core/appdata');
+const { log, pruneOldLogs, pruneOldScreenshots, logFile, errorLogFile } = require('../core/appdata');
 
 /**
  * ELECTRON_RUN_AS_NODE GUARD — must come before anything else.
@@ -328,6 +328,7 @@ function boot() {
   });
 
   pruneOldLogs();
+  pruneOldScreenshots();
   log.info('--- ' + APP_NAME + ' ' + safeVersion() + ' starting (Electron ' + process.versions.electron + ') ---');
   try { log.info('exe: ' + app.getPath('exe')); } catch { /* not fatal */ }
 

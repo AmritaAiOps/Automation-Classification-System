@@ -8,6 +8,7 @@
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
+    "postinstall": "puppeteer browsers install chrome",
     "start": "electron .",
     "cli": "electron . --cli",
     "test": "node tools/selftest.js",
@@ -15,6 +16,7 @@
     "build": "node tools/build.js",
     "release-test": "node tools/release-test.js",
     "audit-deps": "node tools/audit-dependencies.js",
+    "check-alert-capture": "node tools/check-alert-capture.js",
     "check-failure-dialog": "node tools/check-failure-dialog.js",
     "check-unpack-recovery": "node tools/check-unpack-recovery.js"
   },

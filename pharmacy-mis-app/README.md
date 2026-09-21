@@ -29,15 +29,56 @@ runtime and its own copy of the report template inside the exe.
 
 | Half | Status |
 | --- | --- |
-| **1 · Portal pull (Puppeteer)** | interface + wiring done, body stubbed — admin machine only |
+| **1 · Portal pull (Puppeteer, driving Microsoft Edge)** | **done** |
 | **2 · Field mapping → master report** | **done** |
 
-The pharmacy portal is reachable only from the admin machine, so half 1 cannot
-be developed or run elsewhere. It is loaded defensively and lazily: if it is
-absent or broken, the customer's application still starts and the mapping half
-works exactly as before. Only the body of `pullFromPortal()` in
-[src/scraper/index.js](src/scraper/index.js) needs filling in on the admin
+The pharmacy portal is reachable only from the admin machine, so half 1 can
+only be exercised there. It runs Microsoft Edge, headful and maximized, so the
+operator watches the run happen live rather than trusting a text log alone; any
+failure aborts the run immediately, saves a screenshot of the failing page to
+`%LOCALAPPDATA%\PharmacyMIS\screenshots\`, and does not fall through to the
+mapping stage. It is loaded defensively and lazily: if Puppeteer is missing or
+broken, the customer's application still starts and the mapping half works
+exactly as before. `pullFromPortal()` in
+[src/scraper/index.js](src/scraper/index.js) is the entry point, on the admin
 machine.
+
+Three portal behaviours worth knowing if this file is touched again, each
+confirmed against a live run and each easy to reintroduce by "simplifying" the
+code that guards against it:
+
+- **An empty-report alert can arrive before Puppeteer can attach to the tab
+  showing it.** The portal answers some runs with a plain `alert()` on the
+  report tab it opens for itself, and a renderer blocked on an unhandled alert
+  cannot be attached to afterwards — `Page.enable` simply hangs on it. Dialog
+  capture is armed while every new tab is still paused at
+  `waitForDebuggerOnStart`, via `captureDialogsEverywhere()`, not after the
+  fact.
+- **Selecting every option in the Purchase Tax Scheme list has to be a real
+  mouse click, not `option.selected = true`.** The form is a SpagoBI/ExtJS
+  widget over the actual `<select>`, and it submits from its own recorded
+  selection, not from the element. Assigning `.selected` leaves the DOM reading
+  "52/52 selected" while the request on the wire still carries one scheme —
+  confirmed by capturing the actual `PurchaseTaxScheme` parameter sent to the
+  server, and it is why every field audit until this was found kept certifying
+  a real day's data as a genuine zero. `selectAllByRealClicks()` in
+  [src/scraper/index.js](src/scraper/index.js) clicks the first option and
+  Shift-clicks the last, and verifies the DOM afterwards rather than trusting
+  that the click landed.
+- **That click has to happen before any combo box's dropdown is opened.**
+  `selectDropdownValue()` (used for GRN Type / GRN Status) leaves its dropdown
+  list open over the form, and the first of the two clicks the tax-scheme
+  selection needs is spent closing that overlay instead of anchoring the
+  range — again invisible in the DOM afterwards. `runPurchaseReport()` selects
+  the tax schemes first for this reason, and `selectAllByRealClicks()` also
+  presses Escape before it starts, so the order does not have to be perfect
+  every time it is called.
+
+`tools/check-alert-capture.js` (`npm run check-alert-capture`) is a regression
+check for the first of these against a local page, not the real portal, so it
+runs without portal access. `tools/inspect-purchase-form.js` and
+`tools/probe-purchase-filters.js` are the scripts that found the second and
+third — kept for the next time this form looks like it is lying.
 
 ## Running it
 
@@ -46,12 +87,35 @@ Double-click **`Pharmacy-MIS.exe`**.
 The first launch unpacks the application into `%LOCALAPPDATA%\PharmacyMIS\` and
 takes a few seconds. Every launch after that is immediate.
 
+The window opens on the Amrita HIS sign-in screen, with **Reports to process**
+at the top of that card — a date field, pre-filled with yesterday but editable
+to any date. It is the one date control on the whole page: both ways on from
+here read it, so setting it to, say, `2026-08-08` and running either path
+fetches or maps that day's reports, not just yesterday's.
+
+- **Sign In**, then **Run** — Puppeteer signs in, pulls the reports for that date
+  and maps them in one go.
+- **Continue without signing in — manual run** — goes straight to the dashboard for
+  reports already on disk, pulled by hand or exported by someone else. No credentials
+  are needed, nothing is fetched, and the master row written is exactly the same. The
+  sign-in card stays in the sidebar, so a portal pull is still one sign-in away in the
+  same session.
+
+Either way the dashboard below it is the same three steps:
+
 1. **Archive root** — the folder that holds (or will hold) `Pharmacy-MIS/`
-2. **Report date** — or let it be read from the inputs folder name
-3. **Source files** — either a dated inputs folder, or the three files picked
+2. **Source files** — either a dated inputs folder, or the three files picked
    individually. Both work, and can be mixed.
-4. **Run daily report** — tick *Preview only* to see every figure and every
+3. **Run daily report** — tick *Preview only* to see every figure and every
    intended cell change without writing anything.
+
+The **Reports to process** date always wins over whatever the source files or
+folder name look like they are for — filing a day's data under a different
+date is sometimes deliberate — but a mismatch is not silent: the log names
+both dates and says which one the run used, so a leftover date from a
+previous session is caught rather than quietly writing a real day's figures
+into the wrong row. If no date is set at all, it falls back to reading one
+from the inputs folder name or the filenames themselves.
 
 ### Headless
 
@@ -261,7 +325,7 @@ src/
     master.js          read/append/update the master report
     template.js        GENERATED — the reference format, baked in as base64
   scraper/
-    index.js           half 1: interface done, body stubbed
+    index.js           half 1: Puppeteer driving Microsoft Edge, headful
   ui/
     server.js          127.0.0.1 + per-launch token, log streamed over SSE
     page.js            the whole UI, one self-contained page, no external assets
@@ -272,7 +336,7 @@ tools/
   launcher/Pack.cs         build-time LZMS compressor (developer machine only)
   make-icon.js             generates assets/icon.ico
   gen-template.js          re-bakes the reference format into src/excel/template.js
-  selftest.js              79 checks against the real reference files
+  selftest.js              81 checks against the real reference files
   release-test.js          checks the built exe, in isolation, as a customer
   audit-dependencies.js    every DLL the exe asks Windows for, from its PE
                            import table — how "nothing to install" is checked
@@ -281,6 +345,13 @@ tools/
   check-unpack-recovery.js compiles Launcher.cs against a small payload and
                            checks it still starts when Windows will not let it
                            replace the folder it unpacks into
+  check-alert-capture.js   regression check for the empty-report alert race
+                           against a local page — see Project status above
+  inspect-purchase-form.js dumps every control on the live Purchase Report
+                           form, as the DOM has it, against a signed-in session
+  probe-purchase-filters.js runs the live Purchase Report with different
+                           filter combinations and reports what each one
+                           actually returns — both need portal access
 ```
 
 ## Development
@@ -288,17 +359,23 @@ tools/
 ```
 npm install
 npm start           # open the app window from source
-npm test            # 79 checks against ../reference
+npm test            # 81 checks against ../reference
 npm run build       # -> dist/Pharmacy-MIS.exe   (1-5 min, see below)
 npm run release-test # checks the built exe, not the source  (~5 min)
 npm run audit-deps  # lists every DLL the exe asks Windows for
 npm run check-failure-dialog  # proves the launcher's error dialog appears
 npm run check-unpack-recovery # proves a locked runtime folder cannot stop a launch
+npm run check-alert-capture   # regression check for the empty-report alert race (launches a real browser)
 ```
 
 Build time is dominated by compressing the payload — LZMS takes about 90
 seconds on 240 MB, and verifies itself by decompressing and comparing before
 the payload is used.
+
+The first build on a new clone also downloads Puppeteer's Chromium (~400 MB)
+into `.chromium-cache/`. `npm install` normally does that through the
+`postinstall` script; step 4 of the build does it too if the folder is missing,
+so a clone that was installed with `--ignore-scripts` still builds.
 
 `npm test` runs the real files in `../reference` through the whole pipeline and
 asserts the eight figures, the identification (including after renaming), the
@@ -314,7 +391,7 @@ If the master's reference format changes, drop the new workbook into
 
 ## How the exe is built
 
-`npm run build` is the only production command. It does eight things:
+`npm run build` is the only production command. It does nine things:
 
 1. bakes `../reference/Daily Report for coding.xlsx` into
    `src/excel/template.js` as base64, so the exe carries the master report's
@@ -322,12 +399,16 @@ If the master's reference format changes, drop the new workbook into
 2. generates `assets/icon.ico` (drawn in code by `tools/make-icon.js`, so the
    icon is reproducible rather than a committed binary)
 3. runs the source self-test and **refuses to build if it fails**
-4. has `electron-builder --dir` assemble the Electron application
-5. removes the locales and helper executables the application never loads
-6. packs the whole application into one brotli-compressed payload
-7. compiles the launcher with `csc.exe` (the C# compiler that ships with
+4. makes sure Puppeteer's Chromium is in `.chromium-cache/`, downloading it if
+   it is not — that folder is ~400 MB, so it is gitignored and absent on a
+   fresh clone; the build fetches it rather than stopping
+5. has `electron-builder --dir` assemble the Electron application, then copies
+   `.chromium-cache/` into its resources folder
+6. removes the locales and helper executables the application never loads
+7. packs the whole application into one brotli-compressed payload
+8. compiles the launcher with `csc.exe` (the C# compiler that ships with
    Windows) and appends the payload to it
-8. verifies the result and writes `Pharmacy-MIS.exe.sha256`
+9. verifies the result and writes `Pharmacy-MIS.exe.sha256`
 
 ### Why Electron, and why a launcher of our own
 
@@ -474,5 +555,7 @@ next updates.
   but the exe, a stripped `PATH`, several working directories, and a renamed
   copy — is the strongest verification available without one. It does not cover
   AppLocker/WDAC policies that block unsigned executables outright.
-- **The portal pull is stubbed.** It is admin-machine-only and cannot prevent
-  the customer's application from starting.
+- **The portal pull needs Microsoft Edge on the machine it runs on.** It is
+  admin-machine-only, requires Edge to be installed (it drives Edge visibly
+  rather than a bundled headless browser), and its absence cannot prevent the
+  customer's application from starting — the mapping half still works.

@@ -10,11 +10,12 @@ const path = require('path');
  * Chromium sitting in %LOCALAPPDATA%\puppeteer (or similar) at install time
  * would work here and be silently missing on the customer's machine.
  *
- * NOT YET WIRED INTO tools/build.js — see README.md "Packaging Puppeteer's
- * Chromium" for what is still needed: an electron-builder `extraResources`
- * entry for this folder, and pointing puppeteer.launch()'s `executablePath`
- * at the packaged copy at runtime (src/scraper/index.js). Tracked there
- * rather than silently assumed to work.
+ * Not used by the portal run itself any more: src/scraper/index.js now drives
+ * Microsoft Edge, headful, so the operator can watch the run happen — see
+ * resolveEdgeExecutablePath() there. This bundled Chromium and its resolver
+ * (resolveChromiumExecutablePath()) are kept as dormant fallback plumbing,
+ * still wired into tools/build.js's packaging step, in case a future need for
+ * a headless/no-Edge path comes back.
  */
 module.exports = {
   cacheDirectory: path.join(__dirname, '.chromium-cache'),

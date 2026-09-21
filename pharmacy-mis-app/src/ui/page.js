@@ -208,11 +208,24 @@ function page(token) {
   [hidden] { display: none !important; }
 
   /* ---- login card ---- */
-  .datepair { display: flex; gap: 10px; margin-bottom: 10px; }
+  .datepair { display: flex; gap: 10px; margin-bottom: 10px; align-items: stretch; }
   .datepair .box { flex: 1; background: #0e141b; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }
   .datepair .box .k { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-faint); }
   .datepair .box .v { font: 600 15px/1.4 var(--mono); color: var(--ink); margin-top: 2px; }
   .datepair .box.report .v { color: var(--accent); }
+  /* The one date field on the page: fetches from the portal and manual runs
+     both use it, so it lives here, next to "Reports to process", rather than
+     being a separate control a person could miss further down the form. */
+  .datepair .box.report { display: flex; flex-direction: column; padding: 5px 7px; }
+  .datepair .box.report .row { display: flex; gap: 6px; margin-top: 2px; align-items: center; }
+  .datepair .box.report input[type=date] {
+    flex: 1; min-width: 0; background: transparent; color: var(--accent);
+    border: 1px solid transparent; border-radius: 4px;
+    padding: 3px 4px; font: 600 15px/1.4 var(--mono);
+  }
+  .datepair .box.report input[type=date]:hover { border-color: var(--line); }
+  .datepair .box.report input[type=date]:focus { outline: none; border-color: var(--accent); background: #0a0f14; }
+  .datepair .box.report button.ghost.small { padding: 4px 8px; font-size: 11px; }
   label.checkline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-dim); margin: 8px 0; cursor: pointer; }
   input[type=password] {
     width: 100%; background: #0e141b; color: var(--ink);
@@ -253,9 +266,16 @@ function page(token) {
         </div>
         <div class="box report">
           <div class="k">Reports to process</div>
-          <div class="v" id="reportDateDisplay">—</div>
+          <div class="row">
+            <input type="date" id="reportDate">
+            <button id="todayBtn" class="ghost small" title="Reset to yesterday">Yesterday</button>
+          </div>
         </div>
       </div>
+      <p class="hint" id="reportDateHint" style="margin:-4px 0 10px;font-size:11px">
+        Set to any date — Sign In and Run (or a manual run below) fetches or maps that day's
+        reports, not just yesterday's.
+      </p>
       <div id="loginFields">
         <label class="field">
           <span>Username</span>
@@ -270,6 +290,7 @@ function page(token) {
           Remember username
         </label>
         <button class="primary" id="signInBtn">Sign In</button>
+        <button class="ghost" id="manualModeBtn" style="width:100%;margin-top:6px">Continue without signing in — manual run</button>
       </div>
       <div id="runFields" hidden>
         <div class="login-status ok" id="signedInAs"></div>
@@ -281,6 +302,10 @@ function page(token) {
       <p class="hint" id="loginHint">
         Puppeteer signs in to Amrita HIS with these credentials — nothing to type into a browser
         window yourself. Once signed in and verified, <b>Run</b> pulls the day's reports.
+        <br><br>
+        No credentials, or the reports already exported by hand? <b>Continue without signing in</b>
+        opens the same dashboard for a manual run — it maps the three reports from a folder you
+        already have and writes the same master row, it just fetches nothing from the portal.
       </p>
     </section>
 
@@ -293,14 +318,7 @@ function page(token) {
           <button id="pickRoot">Browse…</button>
         </div>
       </label>
-      <label class="field">
-        <span>Report date</span>
-        <div class="row">
-          <input type="date" id="reportDate">
-          <button id="todayBtn" class="ghost" title="Set to yesterday — the reports to process today">Yesterday</button>
-        </div>
-      </label>
-      <div class="paths" id="paths">Choose a root and a date to see where this run will read and write.</div>
+      <div class="paths" id="paths">Choose a root, and set the date under "Reports to process" above, to see where this run will read and write.</div>
     </section>
 
     <section class="card">
@@ -396,7 +414,13 @@ const api = async (path, body) => {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({ error: 'Bad response from the app' }));
-  if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+  if (!res.ok || data.error) {
+    throw Object.assign(new Error(data.error || ('HTTP ' + res.status)), {
+      screenshot: data.screenshot || null,
+      docLink: data.docLink || null,
+      docLinkLabel: data.docLinkLabel || null,
+    });
+  }
   return data;
 };
 
@@ -557,9 +581,33 @@ $('copyLog').onclick = async () => {
 };
 
 /* ---------- status ---------- */
-function setStatus(text, kind) {
+
+/**
+ * Fill el with the given text, plus a real, clickable link when one is given
+ * — for errors like a Puppeteer/Edge launch failure, where the message alone
+ * ("Code: 0") means nothing to whoever is looking at it, but a link to what
+ * that code means (or a general troubleshooting guide) does. Built with DOM
+ * calls rather than innerHTML so nothing in text or label is ever parsed as
+ * markup. The link opens in the operator's normal browser, not this window
+ * (see main.js's setWindowOpenHandler for target="_blank").
+ */
+function renderMessageWithLink(el, text, link, label) {
+  el.textContent = '';
+  el.appendChild(document.createTextNode(text));
+  if (link) {
+    el.appendChild(document.createTextNode(' — '));
+    const a = document.createElement('a');
+    a.href = link;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = label || 'what this means';
+    el.appendChild(a);
+  }
+}
+
+function setStatus(text, kind, link, linkLabel) {
   const el = $('statusMsg');
-  el.textContent = text;
+  renderMessageWithLink(el, text, link, linkLabel);
   el.className = 'msg' + (kind ? ' ' + kind : '');
 }
 function setBusy(busy) {
@@ -573,6 +621,7 @@ function setBusy(busy) {
   $('runPortalBtn').textContent = busy ? 'Running…' : 'Run';
   $('signOutBtn').disabled = busy;
   $('signInBtn').disabled = busy || signingIn;
+  $('manualModeBtn').disabled = busy;
 }
 
 /* ---------- Amrita HIS sign-in (two steps: Sign In, then Run) ---------- */
@@ -581,9 +630,9 @@ let pipelineBusy = false;
 let reportDateIso = null; // set from the server at boot — the single source of truth for "yesterday"
 let lastRunWasPortal = false; // which button started the run in flight, for the run-end handler below
 
-function setLoginStatus(text, kind) {
+function setLoginStatus(text, kind, link, linkLabel) {
   const el = $('loginStatus');
-  el.textContent = text;
+  renderMessageWithLink(el, text, link, linkLabel);
   el.className = 'login-status' + (kind ? ' ' + kind : '');
 }
 
@@ -655,6 +704,19 @@ async function loadSavedUsername() {
   setTimeout(() => { $('hisPassword').value = ''; }, 400);
 }
 
+/*
+ * The manual half of the app needs no Amrita HIS session at all — /api/run
+ * takes files that are already on disk and never touches the portal — so the
+ * login card offers a way straight past it. The login card stays where it is
+ * in the sidebar afterwards, so a portal pull is still one sign-in away in the
+ * same launch; only the button goes, having nothing left to do.
+ */
+$('manualModeBtn').onclick = () => {
+  unlockDashboard();
+  $('manualModeBtn').hidden = true;
+  setLoginStatus('Manual run — sign in above whenever the portal pull is needed.');
+};
+
 /* Step 1: Sign In — authenticates and verifies, but does not pull any report yet. */
 $('signInBtn').onclick = async () => {
   const username = $('hisUsername').value.trim();
@@ -693,7 +755,12 @@ $('signInBtn').onclick = async () => {
     // username or password.") — no need to prefix it with anything, and the
     // Dashboard stays locked and the fields stay ready for another attempt
     // until it reads correctly.
-    setLoginStatus('✗ ' + err.message, 'err');
+    setLoginStatus(
+      '✗ ' + err.message + (err.screenshot ? ' — screenshot: ' + err.screenshot : ''),
+      'err',
+      err.docLink,
+      err.docLinkLabel,
+    );
   } finally {
     setSigningIn(false);
   }
@@ -730,7 +797,7 @@ $('runPortalBtn').onclick = async () => {
     });
   } catch (err) {
     setBusy(false);
-    setLoginStatus('✗ ' + err.message, 'err');
+    setLoginStatus('✗ ' + err.message, 'err', err.docLink, err.docLinkLabel);
     showLoginFields(); // the session is gone either way — /api/run-portal always closes it
   }
 };
@@ -761,9 +828,25 @@ function connect() {
         setLoginStatus('✓ Automation completed. Sign in again to run once more.', 'ok');
         renderPoBrowserSummary(r);
       } else if (r.stage === 'login') {
-        setLoginStatus('✗ Amrita HIS session problem: ' + r.error, 'err');
+        setLoginStatus('✗ Amrita HIS session problem: ' + r.error, 'err', r.docLink, r.docLinkLabel);
+      } else if (r.stage === 'portal') {
+        // Stopped during the portal pull itself — the classification stage
+        // never ran, so there is nothing in the master file from this attempt.
+        setLoginStatus(
+          '✗ Stopped during the portal pull (classification was not run): ' + r.error
+          + (r.screenshot ? ' — screenshot: ' + r.screenshot : ''),
+          'err',
+          r.docLink,
+          r.docLinkLabel,
+        );
       } else {
-        setLoginStatus('✗ Report automation failed: ' + r.error, 'err');
+        setLoginStatus(
+          '✗ Report automation failed: ' + r.error
+          + (r.screenshot ? ' — screenshot: ' + r.screenshot : ''),
+          'err',
+          r.docLink,
+          r.docLinkLabel,
+        );
       }
     }
   });
@@ -899,7 +982,6 @@ $('runBtn').onclick = async () => {
     const s = await api('/api/status');
     reportDateIso = s.reportDate;
     $('todayDisplay').textContent = s.todayDisplay;
-    $('reportDateDisplay').textContent = s.reportDateDisplay;
 
     // The server's copy is the one that survives a restart, so it wins over
     // whatever localStorage had — but only where it actually holds something,
@@ -915,6 +997,7 @@ $('runBtn').onclick = async () => {
       setLoginStatus('✓ Logged in to Amrita HIS — verified', 'ok');
       showRunFields(s.signedInUsername);
       unlockDashboard();
+      $('manualModeBtn').hidden = true;
     }
 
     const b = $('scraperBadge');
@@ -926,6 +1009,7 @@ $('runBtn').onclick = async () => {
       // No Amrita HIS to sign in to in this build — the mapping/manual half
       // must stay fully usable on its own, so there is nothing to gate here.
       unlockDashboard();
+      $('manualModeBtn').hidden = true;
     }
     appendMeta('Pharmacy MIS ' + s.version + ' — Node ' + s.node);
     appendMeta('Today ' + s.todayDisplay + ' — processing reports for ' + s.reportDateDisplay);

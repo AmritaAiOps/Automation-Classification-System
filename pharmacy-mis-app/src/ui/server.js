@@ -129,6 +129,8 @@ function logRunOutcome(result, archiveRoot, reportDate, inputFolder) {
       'Archive folder:   ' + (archiveRoot || '(not set)'),
       'Report date:      ' + (reportDate || '(not set)'),
       'Inputs folder:    ' + (inputFolder === null ? '(Amrita HIS portal pull)' : (inputFolder || '(not set)')),
+      ...(result.screenshot ? ['Screenshot:       ' + result.screenshot] : []),
+      ...(result.docLink ? [`More info:        ${result.docLinkLabel || result.docLink} — ${result.docLink}`] : []),
     ].join('\n'),
     (result.log || [])
       .map((e) => e.level.toUpperCase().padEnd(5) + ' ' + '  '.repeat(e.indent || 0) + e.message)
@@ -202,8 +204,15 @@ const routes = {
     } catch (err) {
       const message = err && err.message ? err.message : String(err);
       log.warn('Amrita HIS sign-in failed: ' + message);
-      broadcast('login-end', { ok: false, error: message });
-      return { ok: false, error: message };
+      const payload = {
+        ok: false,
+        error: message,
+        screenshot: err.screenshot || null,
+        docLink: err.docLink || null,
+        docLinkLabel: err.docLinkLabel || null,
+      };
+      broadcast('login-end', payload);
+      return payload;
     }
   },
 
@@ -236,13 +245,35 @@ const routes = {
       try {
         // eslint-disable-next-line global-require
         const scraper = require('../scraper');
-        const pull = await scraper.runReports(session, { layout }, makeLogger(sink));
+        let pull;
+        try {
+          pull = await scraper.runReports(session, { layout }, makeLogger(sink));
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          // A pull that stopped partway through never has files worth
+          // classifying — the classification stage below must not run against
+          // whatever was already sitting in the folder from a previous day.
+          throw Object.assign(new Error(message), {
+            stage: LOGIN_FAILURE.test(message) ? 'login' : 'portal',
+            screenshot: err.screenshot || null,
+            docLink: err.docLink || null,
+            docLinkLabel: err.docLinkLabel || null,
+          });
+        }
         result = await runDailyReport({ archiveRoot: layout.root, reportDate: layout.date.iso, dryRun: false }, sink);
         if (result.ok) result.poBrowser = pull.poBrowser;
         else result.stage = 'automation';
       } catch (err) {
         const message = err && err.message ? err.message : String(err);
-        result = { ok: false, error: message, stage: LOGIN_FAILURE.test(message) ? 'login' : 'automation', log: [] };
+        result = {
+          ok: false,
+          error: message,
+          stage: err.stage || (LOGIN_FAILURE.test(message) ? 'login' : 'automation'),
+          screenshot: err.screenshot || null,
+          docLink: err.docLink || null,
+          docLinkLabel: err.docLinkLabel || null,
+          log: [],
+        };
       } finally {
         // eslint-disable-next-line global-require
         await require('../scraper').closeSession(session);

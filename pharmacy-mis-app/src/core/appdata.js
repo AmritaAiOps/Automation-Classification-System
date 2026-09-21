@@ -13,6 +13,7 @@ const path = require('path');
  *
  *   %LOCALAPPDATA%\PharmacyMIS\
  *     logs\pharmacy-mis-YYYY-MM-DD.log
+ *     screenshots\failure_<step>_<timestamp>.png
  *
  * Customer *data* (the archive tree) is not here — that goes wherever the
  * customer points the app, see core/paths.js.
@@ -75,6 +76,24 @@ function pruneOldLogs() {
     for (const name of fs.readdirSync(logDir())) {
       if (!/^pharmacy-mis-\d{4}-\d{2}-\d{2}\.log$/.test(name)) continue;
       const full = path.join(logDir(), name);
+      if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
+    }
+  } catch { /* housekeeping only — never fatal */ }
+}
+
+function screenshotDir() {
+  const dir = path.join(appDir(), 'screenshots');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* reported by the writer */ }
+  return dir;
+}
+
+/** Drop failure screenshots older than the retention window, same as pruneOldLogs(). */
+function pruneOldScreenshots() {
+  try {
+    const cutoff = Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    for (const name of fs.readdirSync(screenshotDir())) {
+      if (!/^failure_.+\.png$/.test(name)) continue;
+      const full = path.join(screenshotDir(), name);
       if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
     }
   } catch { /* housekeeping only — never fatal */ }
@@ -208,6 +227,8 @@ module.exports = {
   logFile,
   log,
   pruneOldLogs,
+  screenshotDir,
+  pruneOldScreenshots,
   documentsDir,
   errorLogFile,
   writeErrorLog,

@@ -40,9 +40,11 @@
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { ensureDir, formatPortalDate } = require('../core/paths');
+const { screenshotDir } = require('../core/appdata');
 
 /** Reports whether the Puppeteer half is available in this build. */
 function isAvailable() {
@@ -103,7 +105,11 @@ const TIMEOUTS = {
   navigation: 45000,
   login: 30000,
   reportLoad: 30000,
-  download: 120000,
+  // Generous on purpose: the report is run with all 52 purchase tax schemes
+  // selected rather than the portal's default handful, and the portal opens it
+  // in a tab of its own that sits there loading for minutes on a busy day.
+  // Overridable for a machine or a date where even this is not enough.
+  download: Number(process.env.PHARMACY_MIS_DOWNLOAD_TIMEOUT_MS) || 300000,
   search: 30000,
 };
 
@@ -185,8 +191,28 @@ async function someFrame(page, pageFunction, ...args) {
   return false;
 }
 
+/**
+ * True for the errors that mean "this handle refers to a document that is no
+ * longer there" — as opposed to anything about what the page contains.
+ *
+ * Worth recognising by name because of how one of them reads. A handle taken
+ * from a frame that has since been replaced does not fail with anything about
+ * staleness: it fails with "Argument should belong to the same JavaScript world
+ * as target object", which sounds like a bug in how the call was made. It is
+ * not. It is a dead handle, and the answer is to look the element up again.
+ */
+function isStaleHandleError(err) {
+  return /same JavaScript world|Execution context was destroyed|Cannot find context|detached Frame|Target closed/i
+    .test(err && err.message ? err.message : '');
+}
+
 async function findInFrames(page, pageFunction, ...args) {
   for (const frame of allFrames(page)) {
+    // A frame the portal has already discarded still shows up in page.frames()
+    // for a while, and it will still answer a search — with an element nothing
+    // can be done with afterwards.
+    if (frame.detached) continue;
+
     let handle;
     try {
       handle = await frame.evaluateHandle(pageFunction, ...args);
@@ -194,17 +220,65 @@ async function findInFrames(page, pageFunction, ...args) {
       continue; // a frame can navigate or be cross-origin mid-search
     }
     const el = handle.asElement();
-    if (el) return el;
+    if (el) {
+      // Proof the handle is live before it is handed to a caller that will act
+      // on it. evaluateHandle() succeeding is not that proof: a frame swapped
+      // out between the search and the use returns a handle that only fails
+      // later, at the point of use, where it reads as an unrelated bug.
+      try {
+        await el.evaluate(() => true);
+        return el;
+      } catch (err) {
+        if (!isStaleHandleError(err)) return el; // a real page problem, not a dead handle
+        await el.dispose().catch(() => {});
+        continue;
+      }
+    }
     await handle.dispose().catch(() => {});
   }
   return null;
 }
 
+/**
+ * Run something that looks an element up and then acts on it, retrying from the
+ * lookup if the handle dies underneath it.
+ *
+ * The portal reloads the frame its menu lives in while the search is being
+ * typed into it, so the gap between "found the box" and "typed in the box" is a
+ * real one that a document swap can land in. Re-finding is the only repair —
+ * the old handle cannot be revived — so the lookup has to be inside the retry,
+ * not before it.
+ */
+async function withFreshHandle(attemptFn, { attempts = 3, label = 'the field' } = {}) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await attemptFn();
+    } catch (err) {
+      if (!isStaleHandleError(err)) throw err;
+      lastErr = err;
+      await sleep(400); // let the replacement document finish arriving
+    }
+  }
+  throw new Error(`${label} kept being replaced while it was being used (${lastErr.message})`);
+}
+
 async function findFieldByLabel(page, labelText, { exact = false } = {}) {
   return findInFrames(page, (label, wantExact) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    // Whitespace is stripped entirely for the actual comparison, not just
+    // collapsed: confirmed against a live run that this portal's own report
+    // forms label fields "FromDate" and "GrnStatus" — no space at all —
+    // while the readable label text passed in at each call site ("from
+    // date", "grn status") does have one. Squashing both sides down to the
+    // same bare-letters form is what makes those the same word rather than
+    // two that merely share most of their letters.
+    const squash = (s) => norm(s).replace(/\s+/g, '');
     const want = norm(label);
-    const matches = (text) => (wantExact ? norm(text) === want : norm(text).includes(want));
+    const wantSquashed = squash(label);
+    const matches = (text) => (wantExact
+      ? norm(text) === want || squash(text) === wantSquashed
+      : norm(text).includes(want) || squash(text).includes(wantSquashed));
     // offsetParent alone is not enough: a field inside a collapsed panel can
     // still report one while occupying no space at all, and a field like that
     // is one Puppeteer refuses to click ("Node is either not clickable or not
@@ -268,6 +342,16 @@ async function findFieldByLabel(page, labelText, { exact = false } = {}) {
  * panel and was doing exactly that. Focusing through the DOM and then typing on
  * the keyboard produces the same keystrokes for the page without depending on
  * where the field happens to be on screen.
+ *
+ * Typed at 90ms/character, not the 15ms this used to be: this portal wires up
+ * a barcode-scanner listener that treats a fast burst of keystrokes as a scan
+ * rather than typing, confirmed live by watching it fire "Creating custom
+ * barcode event" for chunks of a report name typed at 15ms/character into the
+ * menu search. When that happens the field's own live-filter never narrows
+ * the list at all, so the wrong (huge, unfiltered) menu entry ends up looking
+ * like the only candidate later. 90ms/character is comfortably above typical
+ * barcode-scanner detection thresholds (usually tens of ms) while still far
+ * faster than hand typing.
  */
 async function focusAndType(page, handle, text) {
   await handle.evaluate((el) => {
@@ -277,7 +361,7 @@ async function focusAndType(page, handle, text) {
   });
   // The keyboard belongs to the page and types wherever the focus is, so this
   // reaches a field inside a frame without any extra ceremony.
-  await page.keyboard.type(text, { delay: 15 });
+  await page.keyboard.type(text, { delay: 90 });
 }
 
 /** Set a form field's value the way a framework-controlled input expects — through the native setter, so React/Angular/Vue see the change. */
@@ -291,21 +375,62 @@ async function setInputValue(handle, value) {
   }, value);
 }
 
+/**
+ * Click an element the way a person does: move the mouse there, pause, press
+ * down, pause, release — rather than a same-tick mousedown+mouseup (what both
+ * ElementHandle.click() and a synthetic dispatchEvent sequence produce).
+ *
+ * Confirmed necessary against a live run of the real portal: its menu-search
+ * result entries have a genuine jQuery `click` handler bound (verified via
+ * jQuery's own event data), the element is exactly where computed, and yet
+ * neither ElementHandle.click() nor a dispatched MouseEvent sequence made the
+ * report open — nothing happened and nothing threw, so it read as a silent,
+ * unexplained navigation failure. Slowing the click down to two real,
+ * separately-timed mouse events is what the site's own script actually
+ * responds to. Falls back to the handle's own in-page click when a bounding
+ * box cannot be resolved (e.g. the element or an ancestor frame has since
+ * scrolled or gone away) — better than doing nothing at all.
+ */
+async function realClick(page, handle) {
+  await handle.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
+  if (process.env.PHARMACY_MIS_DEBUG_CLICK) {
+    const info = await handle.evaluate((el) => ({ tag: el.tagName, html: el.outerHTML.slice(0, 200), href: el.getAttribute && el.getAttribute('href') }));
+    console.error('[DEBUG realClick target]', JSON.stringify(info));
+  }
+  const box = await handle.boundingBox().catch(() => null);
+  if (process.env.PHARMACY_MIS_DEBUG_CLICK) console.error('[DEBUG realClick box]', JSON.stringify(box));
+  if (box) {
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await sleep(100);
+    await page.mouse.down();
+    await sleep(120);
+    await page.mouse.up();
+    return;
+  }
+  await handle.evaluate((el) => {
+    for (const type of ['mouseover', 'mousedown', 'mouseup', 'click']) {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  });
+}
+
 /** Click whatever on the page has visible text matching label (button, link, submit input). */
 async function clickButtonByText(page, label) {
-  return someFrame(page, (text) => {
+  const target = await findInFrames(page, (text) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const want = norm(text);
     const els = document.querySelectorAll('button, input[type="submit"], input[type="button"], a, [role="button"]');
     for (const el of els) {
       const t = el.tagName === 'INPUT' ? el.value : el.textContent;
-      if ((norm(t) === want || norm(t).includes(want)) && el.offsetParent !== null && !el.disabled) {
-        el.click();
-        return true;
-      }
+      if ((norm(t) === want || norm(t).includes(want)) && el.offsetParent !== null && !el.disabled) return el;
     }
-    return false;
+    return null;
   }, label);
+  if (!target) return false;
+  await realClick(page, target);
+  return true;
 }
 
 /**
@@ -323,7 +448,7 @@ async function clickButtonByText(page, label) {
  * container that happens to hold it alongside every other menu item.
  */
 async function clickMenuItemByText(page, label) {
-  return someFrame(page, (text) => {
+  const target = await findInFrames(page, (text) => {
     const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const want = norm(text);
     const boxed = (el) => {
@@ -334,24 +459,31 @@ async function clickMenuItemByText(page, label) {
     const candidates = [...document.querySelectorAll(
       'a, li, td, span, div, [role="option"], [role="menuitem"], [role="treeitem"]',
     )].filter((el) => norm(el.textContent).includes(want) && boxed(el));
-    if (!candidates.length) return false;
+    if (!candidates.length) return null;
 
     const exact = candidates.filter((el) => norm(el.textContent) === want);
     const pool = exact.length ? exact : candidates;
     // Fewest descendants = closest to the text itself.
     pool.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
 
-    // An anchor inside the entry is the thing actually wired to navigate.
-    const target = pool[0].tagName === 'A' ? pool[0] : (pool[0].querySelector('a') || pool[0]);
-    target.scrollIntoView({ block: 'center', inline: 'nearest' });
-
-    // Menus driven by script often listen for mousedown rather than click, so
-    // send the whole sequence instead of click() alone.
-    for (const type of ['mouseover', 'mousedown', 'mouseup', 'click']) {
-      target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    if (window.__PHARMACY_MIS_DEBUG_CLICK__) {
+      console.log('[DEBUG clickMenuItemByText] candidates=' + candidates.length + ' exact=' + exact.length);
+      console.log('[DEBUG pool[0]]', pool[0] ? pool[0].tagName + ' class="' + pool[0].className + '" text="' + norm(pool[0].textContent).slice(0, 80) + '" descendants=' + pool[0].querySelectorAll('*').length : 'none');
     }
-    return true;
+
+    // An anchor is the thing actually wired to navigate — confirmed against a
+    // live run that this portal's own click handler is bound to the <a>
+    // itself, not to the plain-text <label> inside it that "fewest
+    // descendants" alone would pick (a leaf label has 0 descendants, its
+    // wrapping <a> has 2, so the sort above puts the label first even though
+    // it is not the thing this needs to click). closest() checks the element
+    // itself before walking up, so this still returns the leaf when it is
+    // already the anchor, and only widens outward when it is not.
+    return pool[0].closest('a') || pool[0].querySelector('a') || pool[0];
   }, label);
+  if (!target) return false;
+  await realClick(page, target);
+  return true;
 }
 
 /** Set a <select>, or a button/radio group, to the option whose text matches valueText. */
@@ -370,8 +502,41 @@ async function selectDropdownValue(page, handle, valueText) {
     return;
   }
   await openControl(handle);
-  const clicked = await clickButtonByText(page, valueText) || await clickMenuItemByText(page, valueText);
-  if (!clicked) throw new Error(`option "${valueText}" not found`);
+
+  // The option list can still be rendering when the first search runs (the
+  // GRN Type panel on a live run was seen open in a failure screenshot with
+  // "All" visible but never clicked), so this is retried for a couple of
+  // seconds rather than checked once.
+  const deadline = Date.now() + 2500;
+  let clicked = false;
+  while (!clicked && Date.now() < deadline) {
+    clicked = await clickButtonByText(page, valueText) || await clickMenuItemByText(page, valueText);
+    if (!clicked) await sleep(200);
+  }
+
+  if (!clicked) {
+    // A native <select> opened by a synthetic click renders its option list as
+    // a separate OS popup outside the page's DOM, so nothing above can ever
+    // find or click it — this is what leaves the panel visibly open forever.
+    // Escape closes that popup either way, and setting .value directly still
+    // works even while it is open, so this is tried as a last resort before
+    // giving up. If handle itself isn't a real select this quietly does
+    // nothing and the throw below still fires with useful detail attached.
+    await page.keyboard.press('Escape').catch(() => {});
+    const fallback = await handle.evaluate((el, val) => {
+      if (el.tagName !== 'SELECT') return false;
+      const norm = (s) => (s || '').trim().toLowerCase();
+      const opt = [...el.options].find((o) => norm(o.textContent) === norm(val) || norm(o.value) === norm(val));
+      if (!opt) return false;
+      el.value = opt.value;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }, valueText).catch(() => false);
+    if (fallback) return;
+
+    const detail = await handle.evaluate((el) => `<${el.tagName.toLowerCase()}${el.id ? ` id="${el.id}"` : ''}${el.className ? ` class="${el.className}"` : ''}>`).catch(() => '(unknown element)');
+    throw new Error(`option "${valueText}" not found (field was ${detail})`);
+  }
 }
 
 /**
@@ -396,6 +561,100 @@ async function openControl(handle) {
  * "Creation Status = ALL" — the option list is read from the live DOM rather
  * than a hard-coded list, so it stays correct if the portal adds a status.
  */
+/**
+ * An option with no label is not a choice a person can make.
+ *
+ * The Purchase Tax Scheme list opens with one: blank text, and a value that is
+ * every other option's id joined by commas. It is the list's own internal
+ * "everything" entry, it renders as an empty row nobody clicks, and selecting
+ * it alongside the real options sends the whole list twice. Real options only,
+ * here and in the audit, so both agree on what "all of them" means.
+ */
+const REAL_OPTIONS = (el) => [...el.options]
+  .map((o, i) => ({ i, text: (o.textContent || '').trim(), value: o.value }))
+  .filter((o) => o.text !== '');
+
+/**
+ * Select every real option in a <select multiple> by clicking the first and
+ * shift-clicking the last — the gesture a person makes, and the only one this
+ * portal actually registers.
+ *
+ * Setting option.selected in the DOM does not work here, and fails in the worst
+ * possible way. This portal is SpagoBI, whose form is an ExtJS widget layer
+ * over the real <select>: it submits from its own record of the selection, not
+ * from the element. Assigning .selected updates the element and nothing else,
+ * so the DOM reads back a confident "52/52 selected" while the request on the
+ * wire carries PurchaseTaxScheme="21" — one scheme. Captured on the wire, both
+ * halves, against a date the reference export proves has 198 rows:
+ *
+ *   programmatic .selected  ->  DOM 52/52  ->  sent "21"              ->  empty
+ *   click + shift-click     ->  DOM 51/52  ->  sent "21,36,35,...,39" ->  227 rows
+ *
+ * That is the whole reason this report came back empty every day, and why the
+ * field audit cheerfully certified it as a genuine zero: the audit was reading
+ * the same DOM the portal ignores.
+ *
+ * Falls back to the DOM assignment if the options cannot be clicked (no box —
+ * a list scrolled out of view or not rendered). The fallback is known not to
+ * register with the widget, so it says so rather than reporting success.
+ */
+async function selectAllByRealClicks(page, field, labelText, log) {
+  const options = await field.evaluate(REAL_OPTIONS);
+  if (!options.length) throw new Error('the dropdown has no options to select');
+
+  // Anything a previous field left hanging over the form has to go before the
+  // first click, or that click is spent closing it instead of anchoring the
+  // range — and the DOM will still look right afterwards, so nothing downstream
+  // would notice. Escape closes an open combo list; the ordering in
+  // runPurchaseReport() means there should be nothing to close, and this is
+  // here so that stops being something the caller has to get right.
+  await page.keyboard.press('Escape').catch(() => {});
+  await sleep(150);
+
+  const handles = await field.$$('option');
+  const first = options[0].i;
+  const last = options[options.length - 1].i;
+
+  const clickOption = async (index, withShift) => {
+    const handle = handles[index];
+    if (!handle) throw new Error(`no option at index ${index}`);
+    await handle.evaluate((el) => el.scrollIntoView({ block: 'nearest' }));
+    await sleep(120);
+    const box = await handle.boundingBox();
+    if (!box) throw new Error(`option ${index} has no clickable box`);
+    if (withShift) await page.keyboard.down('Shift');
+    // Aimed left of centre: a long option label can run wider than the list,
+    // and the middle of the box can land outside the visible list area.
+    await page.mouse.click(box.x + Math.min(box.width / 2, 60), box.y + box.height / 2);
+    if (withShift) await page.keyboard.up('Shift');
+    await sleep(120);
+  };
+
+  try {
+    await clickOption(first, false);
+    if (last !== first) await clickOption(last, true);
+  } catch (err) {
+    log.warn(`${labelText}: could not be selected by clicking (${err.message}). `
+      + 'Falling back to setting the selection directly, which this portal may ignore.');
+    return field.evaluate((el) => {
+      const real = [...el.options].filter((o) => (o.textContent || '').trim() !== '');
+      real.forEach((o) => { o.selected = true; });
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return real.length;
+    });
+  }
+
+  // The click either took or it did not, and "did not" has to be loud: a
+  // partial selection here is a wrong number in the master report that looks
+  // exactly like a right one.
+  const got = await field.evaluate((el) => [...el.options]
+    .filter((o) => o.selected && (o.textContent || '').trim() !== '').length);
+  if (got !== options.length) {
+    throw new Error(`clicking selected ${got} of ${options.length} option(s)`);
+  }
+  return got;
+}
+
 async function selectAllOptions(page, labelText, log) {
   const field = await findFieldByLabel(page, labelText);
   if (!field) throw new Error(`field not found`);
@@ -403,13 +662,7 @@ async function selectAllOptions(page, labelText, log) {
   const tag = await field.evaluate((el) => el.tagName);
 
   if (tag === 'SELECT') {
-    const count = await field.evaluate((el) => {
-      const opts = [...el.options].filter((o) => o.value !== '');
-      opts.forEach((o) => { o.selected = true; });
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return opts.length;
-    });
-    if (!count) throw new Error('the dropdown has no options to select');
+    const count = await selectAllByRealClicks(page, field, labelText, log);
     log.ok(`${labelText} = ALL (${count} option(s))`);
     return;
   }
@@ -443,6 +696,244 @@ async function selectAllOptions(page, labelText, log) {
   log.ok(`${labelText} = ALL${result.count ? ` (${result.count} option(s))` : ''}`);
 }
 
+/**
+ * Every field on the report form as it stands the moment before the report is
+ * run: what it is, and for a list how much of it is actually selected.
+ *
+ * The specific question this exists to answer: a multi-select left on the
+ * portal's default selection narrows the report silently, and the empty result
+ * that follows looks exactly like a day on which nothing was purchased. One is
+ * a bug and the other is a zero, and nothing in the downloaded file
+ * distinguishes them. Any list that is not fully selected is called out here by
+ * name, so "the report is empty" can be trusted before it is believed.
+ *
+ * Diagnostic, behind PHARMACY_MIS_AUDIT_FIELDS, so a normal customer run is
+ * not buried in it.
+ *
+ * Know what this cannot see. It reads the DOM, and on this portal the DOM is
+ * not what gets submitted — the ExtJS layer over the form keeps its own record
+ * and sends that. A selection made by assigning option.selected shows here as
+ * fully selected while the request carries one value, and this audit signed off
+ * on exactly that for every run until it was caught on the wire. A clean audit
+ * therefore means "nothing on the form looks narrow", not "the request is
+ * right". What makes the selection trustworthy is that selectAllByRealClicks()
+ * makes it the way a person does and fails loudly if it does not take.
+ */
+async function auditFormFields(page, label, log) {
+  const verbose = !!process.env.PHARMACY_MIS_AUDIT_FIELDS;
+  if (verbose) log.info(`--- field audit: ${label} ---`);
+  const underselected = [];
+
+  for (const frame of allFrames(page)) {
+    let fields;
+    try {
+      fields = await frame.evaluate(() => {
+        const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+        const boxed = (el) => {
+          const r = el.getBoundingClientRect();
+          return el.offsetParent !== null && r.width > 0 && r.height > 0;
+        };
+        const labelFor = (el) => {
+          if (el.id) {
+            const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+            if (lab && norm(lab.textContent)) return norm(lab.textContent);
+          }
+          const cell = el.closest('td');
+          if (cell && cell.previousElementSibling) {
+            const text = norm(cell.previousElementSibling.textContent);
+            if (text) return text;
+          }
+          let prev = el.previousElementSibling;
+          for (let i = 0; i < 3 && prev; i += 1) {
+            const text = norm(prev.textContent);
+            if (text) return text;
+            prev = prev.previousElementSibling;
+          }
+          return norm(el.name || el.id) || '(unlabelled)';
+        };
+
+        return [...document.querySelectorAll('select, input, textarea')]
+          .filter(boxed)
+          .filter((el) => !/^(hidden|submit|button|image)$/i.test(el.type || ''))
+          .map((el) => {
+            const base = { label: labelFor(el), tag: el.tagName.toLowerCase(), type: el.type || '' };
+            if (el.tagName === 'SELECT') {
+              // Real options only — an unlabelled entry is the list's own
+              // internal "everything" value, not a choice. Counting it made
+              // this audit demand 52/52 on a list whose full selection is 51,
+              // which is the opposite of the mistake it exists to catch.
+              const real = [...el.options].filter((o) => (o.textContent || '').trim() !== '');
+              return {
+                ...base,
+                multiple: el.multiple,
+                options: real.length,
+                selected: real.filter((o) => o.selected).length,
+              };
+            }
+            return { ...base, value: norm(el.value).slice(0, 40), checked: !!el.checked };
+          });
+      });
+    } catch {
+      continue; // a frame can navigate or be cross-origin mid-audit
+    }
+
+    for (const field of fields) {
+      if (field.tag === 'select') {
+        const kind = field.multiple ? 'multi-select' : 'dropdown';
+        const incomplete = field.multiple && field.selected < field.options;
+        if (incomplete) underselected.push(`${field.label} (${field.selected}/${field.options})`);
+        if (verbose) {
+          log.info(`  ${field.label} [${kind}] ${field.selected}/${field.options} selected`
+            + (incomplete ? '   <-- NOT all selected' : ''));
+        }
+      } else if (verbose && /^(radio|checkbox)$/i.test(field.type)) {
+        log.info(`  ${field.label} [${field.type}] "${field.value}"${field.checked ? ' (on)' : ''}`);
+      } else if (verbose) {
+        log.info(`  ${field.label} [${field.type || field.tag}] "${field.value}"`);
+      }
+    }
+  }
+
+  if (underselected.length) {
+    log.warn(`${label}: ${underselected.length} list(s) are not fully selected — ${underselected.join(', ')}`);
+  }
+  if (verbose) log.info('--- end field audit ---');
+
+  return { complete: underselected.length === 0, underselected };
+}
+
+/* ------------------------------------------------------------------ *
+ * What the portal says back
+ * ------------------------------------------------------------------ */
+
+/**
+ * Record an alert the portal raised, wherever it was raised.
+ *
+ * Kept on the browser rather than a page: the alert can come from the report
+ * window the portal opens rather than the one being driven, and whichever step
+ * is waiting needs to see it wherever it came from. Two capture paths run at
+ * once (see below) and can both see the same alert, so a repeat of the same
+ * message within a couple of seconds is treated as one event and logged once.
+ */
+function recordDialog(browser, message, log) {
+  const now = Date.now();
+  const previous = browser.__lastDialog;
+  if (previous && previous.message === message && now - previous.at < 2000) return false;
+  browser.__lastDialog = { message, at: now };
+  log.info(`the portal said: "${message}" — clicking OK`);
+  return true;
+}
+
+/**
+ * The portal answers some runs with a plain window.alert() rather than a file
+ * — "The report is empty. Please try different parameters." is the one that
+ * matters here. An alert blocks the page's own JavaScript until it is
+ * dismissed, and Puppeteer (25.x) never dismisses one on its own: with nothing
+ * listening it simply re-emits the event and leaves the dialog standing, so the
+ * download wait runs its full timeout and fails as a timeout, which says
+ * nothing about what actually happened. Captured and dismissed here; whichever
+ * step is in flight reads it back with takeDialog().
+ *
+ * This covers the page the run drives directly. The report tab the portal opens
+ * for itself is covered by captureDialogsEverywhere(), which has to work much
+ * harder for it.
+ */
+function attachDialogCapture(page, log) {
+  page.on('dialog', async (dialog) => {
+    const message = (dialog.message() || '').replace(/\s+/g, ' ').trim();
+    try { recordDialog(page.browser(), message, log); } catch { /* browser already gone */ }
+    await dialog.accept().catch(() => dialog.dismiss().catch(() => {}));
+  });
+}
+
+/**
+ * Dialog capture on every page this browser opens, present and future.
+ *
+ * A page-only handler is not enough: an alert raised on the report tab the
+ * portal opens is nobody's dialog as far as the driven page is concerned, so it
+ * goes unanswered, blocks that renderer, and the run waits out its whole
+ * download timeout next to an OK button nothing will ever click.
+ *
+ * The obvious version of this — browser.on('targetcreated') and then
+ * await target.page() — cannot work, and the reason is worth writing down,
+ * because it fails in a way that looks like a hang rather than a bug.
+ * Reproduced locally against a page that alerts as it parses:
+ *
+ *   1. Puppeteer emits 'targetcreated' for the report tab only once that tab
+ *      has already been resumed and navigated (observed: url was already the
+ *      report's, not about:blank).
+ *   2. By then the alert is up and the tab's renderer is blocked on it.
+ *   3. target.page() runs Page.enable / Runtime.enable / Network.enable against
+ *      that renderer, and a blocked renderer answers none of them. It does not
+ *      reject — it hangs for the full protocolTimeout (180s by default).
+ *   4. So the 'dialog' listener is never attached at all. Not a race that is
+ *      sometimes lost: a deadlock that is never won.
+ *
+ * Page.enable is also the one command needed to dismiss a dialog
+ * (Page.handleJavaScriptDialog is refused while the Page domain is disabled),
+ * so once the alert is up, nothing can clear it. It has to be caught before it
+ * opens.
+ *
+ * Which is what this does: it takes over CDP's auto-attach at the browser
+ * level, so a new tab is seen the moment it is created — still at url "" and
+ * still paused at waitForDebuggerOnStart, before a line of its script has run.
+ * Page.enable answers fine while a target is paused. Only then is the target
+ * resumed. Verified against the worst case (alert during the first parse, no
+ * load delay at all): caught, where every after-the-fact approach fails.
+ */
+async function captureDialogsEverywhere(browser, log) {
+  let root;
+  try {
+    root = await browser.target().createCDPSession();
+  } catch (err) {
+    // Not fatal on its own — the driven page still has its own handler, and a
+    // report that downloads normally never raises an alert. Worth saying out
+    // loud, because it turns a clean "the report is empty" into a timeout.
+    log.warn(`browser-wide alert capture could not be installed (${err.message}). `
+      + 'An alert raised on a report tab would go unanswered.');
+    return;
+  }
+
+  root.on('Target.attachedToTarget', async (event) => {
+    const { sessionId, targetInfo, waitingForDebugger } = event;
+    const session = root.connection()?.session(sessionId);
+    if (!session) return;
+
+    try {
+      if (targetInfo.type === 'page') {
+        session.on('Page.javascriptDialogOpening', async (dialog) => {
+          const message = (dialog.message || '').replace(/\s+/g, ' ').trim();
+          recordDialog(browser, message, log);
+          // Whoever gets there first wins; the loser is told no dialog is
+          // showing, which is the right outcome and not worth reporting.
+          await session.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+        });
+        await session.send('Page.enable');
+      }
+    } catch (err) {
+      log.debug(`alert capture could not be armed for ${targetInfo.url || 'a new tab'}: ${err.message}`);
+    } finally {
+      // Always, and even after a failure above: this handler is what holds a
+      // paused target, and a target left paused is a tab that never loads.
+      // Puppeteer resumes it too, so this is a duplicate on the happy path.
+      if (waitingForDebugger) await session.send('Runtime.runIfWaitingForDebugger').catch(() => {});
+    }
+  });
+
+  await root.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+}
+
+/** The last dialog the portal raised anywhere in this browser, cleared as it is read. */
+function takeDialog(page) {
+  let browser;
+  try { browser = page.browser(); } catch { return null; }
+  const dialog = browser.__lastDialog || null;
+  browser.__lastDialog = null;
+  return dialog;
+}
+
+const EMPTY_REPORT = /report is empty/i;
+
 /* ------------------------------------------------------------------ *
  * Downloads
  * ------------------------------------------------------------------ */
@@ -452,8 +943,20 @@ function snapshotDir(dir) {
   return new Set(fs.readdirSync(dir));
 }
 
-/** Point Chromium's download machinery at dir for the lifetime of this page. */
+/**
+ * Point Chromium's download machinery at dir.
+ *
+ * Set on the browser rather than the page, because the portal can deliver a
+ * report through a window it opens rather than the one being driven, and a
+ * per-page setting does not follow it there. Falls back to the page-level call
+ * on anything that will not accept the browser-wide one.
+ */
 async function routeDownloadsTo(page, dir) {
+  try {
+    const client = await page.browser().target().createCDPSession();
+    await client.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dir });
+    return;
+  } catch { /* fall through to the page-level call */ }
   const client = await page.target().createCDPSession();
   await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: dir });
 }
@@ -463,14 +966,41 @@ async function routeDownloadsTo(page, dir) {
  * growing. No fixed sleeps: this polls a real filesystem condition (a new,
  * size-stable file) rather than waiting a guessed number of seconds.
  */
-async function waitForNewDownload(dir, before, { timeout = TIMEOUTS.download, label = 'report' } = {}) {
+async function waitForNewDownload(dir, before, { timeout = TIMEOUTS.download, label = 'report', page = null, log = null } = {}) {
   const deadline = Date.now() + timeout;
+  const startedAt = Date.now();
+  let nextHeartbeat = startedAt + 15000;
 
   let candidate = null;
   while (Date.now() < deadline) {
     const names = fs.readdirSync(dir).filter((n) => !n.endsWith('.crdownload') && !n.endsWith('.tmp'));
     const fresh = names.find((n) => !before.has(n));
     if (fresh) { candidate = path.join(dir, fresh); break; }
+
+    // A silent two-minute wait is indistinguishable from a hang. Saying where
+    // the browser actually is every 15s turns "it timed out" into something
+    // that can be read afterwards.
+    if (log && Date.now() >= nextHeartbeat) {
+      nextHeartbeat = Date.now() + 15000;
+      const seconds = Math.round((Date.now() - startedAt) / 1000);
+      let where = '';
+      try {
+        const pages = await page.browser().pages();
+        where = pages.map((p) => shortUrl(p.url())).join(' | ');
+      } catch { where = '(could not read the open pages)'; }
+      log.info(`still waiting after ${seconds}s — open tab(s): ${where}`);
+    }
+
+    // The portal saying something is an answer, and waiting out the full
+    // download timeout after it has already spoken only buries what it said.
+    const dialog = page && takeDialog(page);
+    if (dialog) {
+      const err = new Error(`${label}: the portal answered "${dialog.message}" instead of producing a file.`);
+      err.portalDialog = dialog.message;
+      err.emptyReport = EMPTY_REPORT.test(dialog.message);
+      throw err;
+    }
+
     await sleep(500);
   }
   if (!candidate) throw new Error(`${label} download timed out.`);
@@ -491,11 +1021,36 @@ async function runReportAndWaitForDownload(page, { downloadDir, label }, log) {
   const before = snapshotDir(downloadDir);
   await routeDownloadsTo(page, downloadDir);
 
+  const audit = await auditFormFields(page, label, log);
+
   const clicked = await clickButtonByText(page, 'Run Report');
   if (!clicked) throw new Error(`${label} download timed out: the "Run Report" control was not found.`);
   log.info('report executed, waiting for the download…');
 
-  const file = await waitForNewDownload(downloadDir, before, { timeout: TIMEOUTS.download, label });
+  let file;
+  try {
+    file = await waitForNewDownload(downloadDir, before, { timeout: TIMEOUTS.download, label, page, log });
+  } catch (err) {
+    // "The report is empty" is only worth believing when every list on the form
+    // was fully selected. A narrowed filter produces exactly the same message,
+    // and the two are indistinguishable from the message alone — so this is
+    // trusted as a genuine zero only against an audit that came back clean, and
+    // is a hard failure otherwise. Silently passing the second case through as
+    // a zero would put a wrong number in the master report that looks exactly
+    // like a right one.
+    if (err.emptyReport && audit.complete) {
+      log.warn(`${label}: the portal reported no data for this date, with every filter fully selected — a genuine zero.`);
+      return null;
+    }
+    if (err.emptyReport) {
+      throw new Error(
+        `${label}: the portal said the report is empty, but ${audit.underselected.length} filter list(s) `
+        + `were not fully selected (${audit.underselected.join(', ')}). That is the likelier cause than a `
+        + 'day with no data, so the run was stopped rather than recording a zero.',
+      );
+    }
+    throw err;
+  }
   log.ok(`download complete: ${path.basename(file)}`);
   return file;
 }
@@ -515,6 +1070,22 @@ function movePortalFile(sourcePath, destDir, label, dateIso) {
 /** The host part of a URL, for logs that should not carry query strings around. */
 function hostOf(url) {
   try { return new URL(url).host; } catch { return url; }
+}
+
+/**
+ * host + path, for naming a page in a log line. A tab that has only just been
+ * created reports its URL as the empty string, which new URL() throws on — and
+ * a throw inside a progress line is how the one observation worth having ("a
+ * second tab opened and is still loading") got swallowed on a live run.
+ */
+function shortUrl(url) {
+  if (!url) return '(blank tab)';
+  try {
+    const parsed = new URL(url);
+    return parsed.host + parsed.pathname;
+  } catch {
+    return String(url).slice(0, 60);
+  }
 }
 
 /**
@@ -709,28 +1280,152 @@ async function describePage(page) {
 }
 
 /**
- * Open a report by name. Prefers a navigation search box, if the portal shell
- * has one (the video shows one) — types the report's label and clicks the
- * matching suggestion. Falls back to clicking a matching menu item directly.
+ * Open the portal's own left-hand menu, if a fresh session or a previous
+ * report navigation left it collapsed to its icon-only rail.
+ *
+ * Confirmed against a live run of the real portal: right after sign-in the
+ * page's <body> already carries the theme's own "page-sidebar-closed" class
+ * (this is a stock Metronic-style admin template, identifiable by that exact
+ * class name), which is what makes the menu search field 0×0 and genuinely
+ * un-typeable rather than merely hard to find. The reference recording
+ * (reference/Log in to site-fbd...mp4) shows the sidebar already open —
+ * which is why that recording never had to deal with this at all.
+ *
+ * The toggle itself is a plain `<div class="sidebar-toggler">`, but a real
+ * Puppeteer mouse click on it (ElementHandle.click(), which clicks at its
+ * on-screen coordinates) was confirmed, live, to do nothing — a native DOM
+ * `.click()` call is what the template's own script actually responds to.
+ * This mirrors why focusAndType() below avoids coordinate-based clicks too.
  */
+async function ensureSidebarOpen(page) {
+  const isClosed = () => page.mainFrame().evaluate(
+    () => document.body.classList.contains('page-sidebar-closed'),
+  );
+  if (!(await isClosed().catch(() => false))) return;
+
+  await page.mainFrame().evaluate(() => {
+    const toggler = document.querySelector('.sidebar-toggler');
+    if (toggler) toggler.click();
+  }).catch(() => {});
+
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline && (await isClosed().catch(() => false))) {
+    await sleep(150);
+  }
+}
+
+/**
+ * Open a report by name via the portal's own menu search — confirmed against
+ * a live run: type the report's label into the menu search field (opening the
+ * sidebar first, if collapsed — see ensureSidebarOpen()) and click the
+ * matching result. Falls back to clicking a matching menu item directly if
+ * the search field cannot be found at all.
+ */
+/**
+ * Back to the application's own home page before the next report is opened.
+ *
+ * Running a report takes the page to the portal's report servlet
+ * (/amritareports/SQRServlet), which carries no menu and no sidebar at all —
+ * so the next report's menu search has nothing to find, and every handle left
+ * over from the previous page belongs to a document that no longer exists.
+ * Confirmed live: the run that downloaded the first report died opening the
+ * second with "Argument should belong to the same JavaScript world as target
+ * object", from exactly that.
+ */
+/**
+ * Close the report tabs the portal opened and never closed.
+ *
+ * Running a report leaves its own tab (/amritareports/SQRServlet) standing.
+ * Left alone these accumulate one per report, and they are not merely untidy:
+ * confirmed against a live run that the driven page picks up an extra frame for
+ * each one (3 frames, then 4), findFieldByLabel() then matches inside one of
+ * those leftovers, and the next report dies on the handle it got back with
+ * "Argument should belong to the same JavaScript world as target object". That
+ * is the failure that killed the third report of a three-report run.
+ */
+async function closeLeftoverReportTabs(page, log) {
+  let pages;
+  try { pages = await page.browser().pages(); } catch { return; }
+  for (const other of pages) {
+    if (other === page) continue;
+    let url = '';
+    try { url = other.url(); } catch { continue; }
+    if (!/amritareports/i.test(url)) continue;
+    log.debug(`closing the leftover report tab at ${shortUrl(url)}`);
+    await other.close().catch(() => { /* already gone */ });
+  }
+}
+
+async function returnToPortalHome(page, log) {
+  await closeLeftoverReportTabs(page, log);
+
+  // Being on the home page's URL is not the same as being on a clean copy of
+  // it. The portal loads each report into a frame of index.jsp and leaves that
+  // frame behind, so after a report has run, the URL still says home while the
+  // document underneath is carrying the last report's form. Searching that for
+  // the next report's fields is what finds a control in a document on its way
+  // out. A reload is the only thing that actually clears them.
+  const carryingReportFrames = page.frames()
+    .some((f) => !f.detached && /amritareports/i.test(f.url()));
+  if (/Core_Common\/index\.jsp/i.test(page.url()) && !carryingReportFrames) return;
+
+  log.debug(carryingReportFrames
+    ? 'the last report\'s frame is still attached — reloading the portal home'
+    : `leaving ${page.url()} — back to the portal home first`);
+  await page.goto(PORTAL_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
+  await sleep(500);
+}
+
 async function navigateToReport(page, reportLabel, log) {
   const close = log.step(`Opening ${reportLabel}`);
   try {
+    await returnToPortalHome(page, log);
     await assertSessionAlive(page);
+    await ensureSidebarOpen(page);
 
-    const searchBox = await findFieldByLabel(page, 'search')
-      || await page.$('input[type="search"], input[placeholder*="search" i]');
+    // findFieldByLabel()'s step 3 matches on placeholder text, which covers
+    // this field's "Ctrl + i to search..." hint directly once it is actually
+    // on screen (ensureSidebarOpen() above is what makes that true). Polled
+    // rather than looked up once: the sidebar lives inside its own frame
+    // (HisHome.jsp) that can still be mid-render immediately after sign-in.
+    let searchBox = null;
+    const searchBoxDeadline = Date.now() + 5000;
+    while (!searchBox && Date.now() < searchBoxDeadline) {
+      searchBox = await findFieldByLabel(page, 'search');
+      if (!searchBox) await sleep(200);
+    }
 
     let opened = false;
     if (searchBox) {
       log.debug('typing the report name into the menu search');
-      await focusAndType(page, searchBox, reportLabel);
+      // Looked up again inside the retry rather than reusing searchBox: the
+      // sidebar frame can be replaced between finding the box and typing into
+      // it, and a handle from the outgoing document cannot be revived.
+      await withFreshHandle(async () => {
+        const box = (await findFieldByLabel(page, 'search')) || searchBox;
+        await focusAndType(page, box, reportLabel);
+      }, { label: 'the menu search box' });
+      // Speculative, not a hard requirement: this only waits for a suggestion
+      // to appear before trying to click one, and a real check follows either
+      // way (opened / reportPageLooksOpen below), so a timeout here just means
+      // "no suggestion showed up" rather than a failure worth stopping for.
+      //
+      // Requires an EXACT leaf match, not a substring one: confirmed against a
+      // live run that the unfiltered menu category (e.g. the whole "Report"
+      // submenu, ~100 entries deep) is itself a substring match for almost any
+      // report name, since its own concatenated text contains every entry's
+      // name somewhere inside it. A substring check here was satisfied by that
+      // huge container the instant typing started — before the site's live
+      // filter had actually narrowed anything down — so clickMenuItemByText()
+      // ran too early and found no exact match yet, only that same container.
+      // Waiting for the real, specific leaf to exist is what actually signals
+      // the filter has finished.
       await page.waitForFunction(
         (label) => {
           const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
           const want = norm(label);
           return [...document.querySelectorAll('li, a, div[role="option"], td')]
-            .some((el) => el.offsetParent !== null && norm(el.textContent).includes(want));
+            .some((el) => el.offsetParent !== null && norm(el.textContent) === want);
         },
         { timeout: 8000 },
         reportLabel,
@@ -739,7 +1434,9 @@ async function navigateToReport(page, reportLabel, log) {
         || await clickButtonByText(page, reportLabel);
 
       // Enter is a last resort, and unlike before it is not taken on trust:
-      // the portal has to actually show the report before this counts as open.
+      // the portal has to actually show the report before this counts as open
+      // (reportPageLooksOpen just below), so the network-idle wait here is
+      // also left speculative — the real gate is that check, not this wait.
       if (!opened) {
         log.debug('no result was clickable — trying Enter');
         await page.keyboard.press('Enter').catch(() => {});
@@ -754,14 +1451,26 @@ async function navigateToReport(page, reportLabel, log) {
 
     if (!opened) throw new Error(`${reportLabel} page could not be located.${await describePage(page)}`);
 
-    await page.waitForNetworkIdle({ idleTime: 800, timeout: TIMEOUTS.reportLoad }).catch(() => null);
-    await assertSessionAlive(page);
-
-    // Clicking something is not the same as the report having opened. Saying so
-    // here, while the menu is still the thing that went wrong, beats failing
-    // later on a missing date field with no hint of why it is missing.
-    if (!await reportPageLooksOpen(page, reportLabel)) {
-      log.warn(`${reportLabel}: the entry was clicked but the report form has not appeared yet`);
+    // Polled against the real signal rather than gated on network silence:
+    // confirmed against a live run that this portal carries a background
+    // widget (Instabug's feedback SDK, visible in its own DOM) that polls
+    // continuously, so a genuinely successful navigation can still see 800ms
+    // of network idle never actually happen. reportPageLooksOpen() below is
+    // what a report having opened actually means here, so that is the thing
+    // this waits for, not an idle window this portal may never produce.
+    // Clicking something is not the same as the report having opened, and
+    // failing here — while the menu is still the thing that went wrong —
+    // beats failing later on a missing date field with no hint of why it is
+    // missing.
+    const reportOpenDeadline = Date.now() + TIMEOUTS.reportLoad;
+    let looksOpen = false;
+    while (!looksOpen && Date.now() < reportOpenDeadline) {
+      await assertSessionAlive(page);
+      looksOpen = await reportPageLooksOpen(page, reportLabel);
+      if (!looksOpen) await sleep(300);
+    }
+    if (!looksOpen) {
+      throw new Error(`${reportLabel} page could not be located: the entry was clicked but the report form has not appeared yet.${await describePage(page)}`);
     }
   } catch (err) {
     if (/page could not be located/i.test(err.message) || /session expired/i.test(err.message)) throw err;
@@ -775,16 +1484,37 @@ async function navigateToReport(page, reportLabel, log) {
  * Field setters shared by all three reports
  * ------------------------------------------------------------------ */
 
+/**
+ * findFieldByLabel(), retried for a few seconds rather than checked once.
+ *
+ * Needed specifically right after navigateToReport() returns: confirmed
+ * against a live run that reportPageLooksOpen() (the thing navigateToReport()
+ * waits on) can see the report's own title before the report's actual form —
+ * living inside a further, separately-loading iframe of its own — has
+ * rendered a single field. A screenshot taken at exactly that failure showed
+ * the report frame still blank white. The title appearing is a real signal
+ * that navigation succeeded, just not a promise that the form is there yet.
+ */
+async function waitForFieldByLabel(page, labelText, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  let field = await findFieldByLabel(page, labelText);
+  while (!field && Date.now() < deadline) {
+    await sleep(200);
+    field = await findFieldByLabel(page, labelText);
+  }
+  return field;
+}
+
 async function setDateRange(page, fromIso, toIso, log) {
   const fromText = formatPortalDate(fromIso);
   const toText = formatPortalDate(toIso);
 
-  const fromField = await findFieldByLabel(page, 'from date');
+  const fromField = await waitForFieldByLabel(page, 'from date');
   if (!fromField) throw new Error('Could not set From Date.');
   await setDateFieldValue(page, fromField, fromText);
   log.ok(`From Date = ${fromText}`);
 
-  const toField = await findFieldByLabel(page, 'to date');
+  const toField = await waitForFieldByLabel(page, 'to date');
   if (!toField) throw new Error('Could not set To Date.');
   await setDateFieldValue(page, toField, toText);
   log.ok(`To Date = ${toText}`);
@@ -864,6 +1594,26 @@ async function runPurchaseReport(page, { reportDate, downloadDir }, log) {
     await navigateToReport(page, 'Purchase Report Pharmacy Detail', log);
     await setDateRange(page, reportDate, reportDate, log);
 
+    // The tax schemes go FIRST, before either combo is touched, and the order
+    // is load-bearing. selectDropdownValue() opens a combo's dropdown list, and
+    // that list stays open over the form: the first of the two clicks this
+    // selection needs then lands on the overlay and is spent dismissing it
+    // rather than anchoring the range. The browser still paints a selection
+    // afterwards, so the DOM reads 51/51 and looks fine, while the widget's own
+    // record — the thing actually submitted — anchored somewhere else.
+    //
+    // Confirmed on a live run against 2026-08-08, a date with 198 known rows:
+    // schemes chosen before the combos gave 227 lines, the same selection made
+    // after them gave "the report is empty", with an identical-looking form and
+    // an identical-looking log line in both cases.
+    //
+    // Leaving the list as found is not an option either — it narrows the report
+    // to whichever schemes happened to be highlighted, and the short result
+    // that comes back is indistinguishable from a quiet day once it is a number
+    // in a spreadsheet.
+    try { await selectAllOptions(page, 'Purchase Tax Scheme', log); }
+    catch (err) { throw new Error(`Could not select all Purchase Tax Scheme options: ${err.message}`); }
+
     const grnType = await findFieldByLabel(page, 'grn type');
     if (!grnType) throw new Error('Could not set GRN Type to All.');
     try { await selectDropdownValue(page, grnType, 'All'); }
@@ -909,9 +1659,19 @@ async function runPOBrowser(page, { reportDate }, log) {
 
     await setLimit(page, 999, log);
 
+    await auditFormFields(page, 'Pharmacy PO Browser', log);
+
     const clicked = await clickButtonByText(page, 'Search');
     if (!clicked) throw new Error('Pharmacy PO Browser search did not complete: the Search control was not found.');
     log.info('search submitted, waiting for results…');
+    // Swallowed deliberately: confirmed against a live run that this portal
+    // carries a background widget (Instabug's feedback SDK, visible in its
+    // own DOM) that polls continuously, so a full 800ms of network silence
+    // may never actually happen even after a perfectly successful search —
+    // it is not a signal this portal can be relied on to produce. The real
+    // gate is readTotalRows() below, which already polls the page's own text
+    // for "Total rows" up to TIMEOUTS.search rather than trusting a timing
+    // window at all.
     await page.waitForNetworkIdle({ idleTime: 800, timeout: TIMEOUTS.search }).catch(() => null);
     await assertSessionAlive(page);
     log.ok('search complete');
@@ -970,6 +1730,114 @@ function findChromeExecutable(dir) {
   return null;
 }
 
+/**
+ * Microsoft Edge, which is what the operator watches the run happen in. Edge
+ * is Chromium under the skin, so Puppeteer drives it over the same CDP it
+ * uses for its own bundled Chromium — the only difference is the executable.
+ *
+ * Deliberately not falling back to the bundled Chromium above: seeing the run
+ * in the browser the operator recognises is the point, and a silent swap to
+ * something that merely looks like Chrome would defeat it. If Edge is
+ * missing, startSession() says so rather than substituting something else.
+ */
+function resolveEdgeExecutablePath() {
+  const candidates = [
+    process.env.PHARMACY_MIS_EDGE_PATH,
+    path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
+      'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(process.env.ProgramFiles || 'C:\\Program Files',
+      'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(process.env.LOCALAPPDATA || '',
+      'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  ].filter(Boolean);
+
+  for (const exe of candidates) {
+    try { if (fs.existsSync(exe)) return exe; } catch { /* try the next candidate */ }
+  }
+  return null;
+}
+
+/** Best-effort removal of the throwaway Edge profile created for one session. */
+function cleanupUserDataDir(dir) {
+  if (!dir) return;
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+/**
+ * Puppeteer's own "Failed to launch the browser process" error already ends
+ * with a link to https://pptr.dev/troubleshooting, but that generic guide
+ * does not explain what the exit code itself means, and the raw multi-line
+ * message is not something to put in a one-line status bar. This picks the
+ * exit code out of that message and attaches a short, specific diagnosis plus
+ * the most relevant documentation link, while keeping the original message
+ * (with its own embedded stderr and link) as `technicalDetail` for the log
+ * file and the Documents error copy.
+ *
+ * `Code: 0` is its own case, not a crash: the browser process started and
+ * exited cleanly before Puppeteer ever saw its DevTools port open, which is
+ * not something Chromium or Puppeteer document a specific meaning for — in
+ * practice it means something else closed it (antivirus/EDR), blocked it
+ * (an Edge group policy), or it never had anywhere to render (a session with
+ * no interactive desktop, e.g. a scheduled task not set to "run only when
+ * user is logged on").
+ */
+function describeBrowserLaunchFailure(err) {
+  const original = err && err.message ? err.message : String(err);
+  if (!/Failed to launch the browser process/i.test(original)) return err;
+
+  const codeMatch = original.match(/Code:\s*(-?\d+)/);
+  const code = codeMatch ? Number(codeMatch[1]) : null;
+
+  let diagnosis;
+  let docLink;
+  let docLinkLabel;
+
+  if (code === 0) {
+    diagnosis = 'Microsoft Edge started and closed again immediately, before it could be '
+      + 'driven. That usually means antivirus/EDR software closed it, an Edge group policy '
+      + 'is blocking the automation flags, or the app is running in a session with no '
+      + 'interactive desktop (for example a scheduled task not set to "run only when user '
+      + 'is logged on"). Try opening Microsoft Edge by hand on this machine first — if that '
+      + 'also fails or is blocked, that points at the real cause.';
+    docLink = 'https://pptr.dev/troubleshooting';
+    docLinkLabel = 'Puppeteer troubleshooting guide';
+  } else if (code !== null) {
+    diagnosis = `Microsoft Edge exited with Windows process status code ${code} while starting up.`;
+    docLink = 'https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55';
+    docLinkLabel = 'Windows process status codes (Microsoft docs)';
+  } else {
+    diagnosis = 'Microsoft Edge could not be started.';
+    docLink = 'https://pptr.dev/troubleshooting';
+    docLinkLabel = 'Puppeteer troubleshooting guide';
+  }
+
+  return Object.assign(new Error(`${diagnosis} (${original.split('\n')[0]})`), {
+    docLink,
+    docLinkLabel,
+    technicalDetail: original,
+  });
+}
+
+/**
+ * A picture of the page the run died on, which is the one thing a text log
+ * cannot give the operator. Never throws: a failed screenshot must not
+ * replace the real error with a worse one.
+ */
+async function captureFailure(page, label, log) {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safe = String(label).replace(/[^a-z0-9]+/gi, '-').slice(0, 60);
+    const file = path.join(screenshotDir(), `failure_${safe}_${stamp}.png`);
+    await page.screenshot({ path: file, fullPage: true });
+    log.error(`page at the moment of failure: ${page.url()}`);
+    log.error(`screenshot saved: ${file}`);
+    return file;
+  } catch {
+    log.warn('could not capture a screenshot of the failing page');
+    return null;
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * Orchestrator
  * ------------------------------------------------------------------ */
@@ -987,23 +1855,72 @@ function findChromeExecutable(dir) {
  */
 async function startSession(credentials, log) {
   const puppeteer = await loadPuppeteer();
-  const executablePath = resolveChromiumExecutablePath();
-  const browser = await puppeteer.launch({
-    // PHARMACY_MIS_HEADFUL=1 for a visible browser during selector work on the
-    // admin machine; every normal run is headless — nothing for the user to
-    // click or type into, per the "no manual browser interaction" rule.
-    headless: process.env.PHARMACY_MIS_HEADFUL ? false : 'new',
-    defaultViewport: { width: 1440, height: 900 },
-    ...(executablePath ? { executablePath } : {}),
-  });
 
+  const executablePath = resolveEdgeExecutablePath();
+  if (!executablePath) {
+    throw new Error(
+      'Microsoft Edge was not found on this machine, and the portal automation runs in Edge '
+      + 'so the run can be watched. Install Microsoft Edge, or set PHARMACY_MIS_EDGE_PATH to '
+      + 'the full path of msedge.exe.',
+    );
+  }
+  log.info('opening Microsoft Edge — the portal will appear in its own window');
+
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-mis-edge-'));
+
+  let browser;
   try {
-    const page = await browser.newPage();
+    browser = await puppeteer.launch({
+      // Headful and in front, on purpose: the operator watches the run happen
+      // rather than trusting a text log alone, and can see exactly where it
+      // stopped if something goes wrong.
+      headless: false,
+      executablePath,
+      // A throwaway profile: the operator's own Edge windows, tabs, cookies
+      // and signed-in identity are never touched, and a stale portal cookie
+      // from a previous day cannot silently authenticate this run.
+      userDataDir,
+      // null viewport + --start-maximized fills the screen with the window
+      // and the window with the page — a fixed viewport would leave the
+      // maximized frame showing a small, letterboxed page instead.
+      defaultViewport: null,
+      args: [
+        '--start-maximized',
+        '--no-first-run',
+        '--no-default-browser-check',
+        // Without this, Edge on Windows does its own "compatibility layer"
+        // self-relaunch on startup: the process Puppeteer just spawned exits
+        // immediately (cleanly, code 0, nothing on stderr) once it hands off
+        // to the real browser process, but Puppeteer is watching the first
+        // process's stderr for the DevTools line and never sees it — surfacing
+        // as "Failed to launch the browser process: Code: 0" even though Edge
+        // itself is fine. This is Puppeteer's own documented fix for exactly
+        // that failure (https://pptr.dev/troubleshooting).
+        '--edge-skip-compat-layer-relaunch',
+      ],
+    });
+  } catch (rawErr) {
+    const err = describeBrowserLaunchFailure(rawErr);
+    if (err.technicalDetail) log.error(err.technicalDetail);
+    cleanupUserDataDir(userDataDir);
+    throw err;
+  }
+
+  let page;
+  try {
+    page = (await browser.pages())[0] || await browser.newPage();
+    await page.bringToFront();
     page.setDefaultTimeout(TIMEOUTS.navigation);
+    attachDialogCapture(page, log);
+    // Awaited: this has to be in place before anything can open a report tab,
+    // and it is a few CDP round-trips, not a listener registration.
+    await captureDialogsEverywhere(browser, log);
     await login(page, credentials, log);
-    return { browser, page, startedAt: Date.now() };
+    return { browser, page, userDataDir, startedAt: Date.now() };
   } catch (err) {
+    if (page) err.screenshot = await captureFailure(page, 'login', log);
     await browser.close().catch(() => {});
+    cleanupUserDataDir(userDataDir);
     throw err;
   }
 }
@@ -1012,6 +1929,7 @@ async function startSession(credentials, log) {
 async function closeSession(session) {
   if (!session || !session.browser) return;
   await session.browser.close().catch(() => {});
+  cleanupUserDataDir(session.userDataDir);
 }
 
 /**
@@ -1038,12 +1956,37 @@ async function runReports(session, { layout }, log) {
     );
     const poBrowser = await runPOBrowser(page, { reportDate: layout.date.iso }, log);
 
-    const files = [
-      movePortalFile(purchaseReportFile, layout.dayInputsDir, 'Purchase-Report-Pharmacy-Detail', layout.date.iso),
-      movePortalFile(receivedItemsFile, layout.dayInputsDir, 'Received-Items-Pharmacy', layout.date.iso),
-    ];
+    // A report the portal said was empty has no file to move, and is recorded
+    // by name instead — the distinction between "no data for this date" and "a
+    // download that went missing" is the whole point of tracking it separately.
+    const empty = [];
+    const files = [];
+    for (const [file, name] of [
+      [purchaseReportFile, 'Purchase-Report-Pharmacy-Detail'],
+      [receivedItemsFile, 'Received-Items-Pharmacy'],
+    ]) {
+      if (file) files.push(movePortalFile(file, layout.dayInputsDir, name, layout.date.iso));
+      else empty.push(name);
+    }
 
-    return { reportDate: layout.date.iso, files, poBrowser };
+    // movePortalFile() already throws if a source file is missing, but that
+    // failure would arrive as a generic ENOENT — check explicitly so a
+    // download that silently never landed on disk gets an error that says so,
+    // instead of the run falling through to classify whatever is already in
+    // the folder.
+    const missing = files.filter((f) => !fs.existsSync(f));
+    if (missing.length) {
+      throw new Error(
+        `${missing.length} expected download(s) did not appear on disk: `
+        + `${missing.map((f) => path.basename(f)).join(', ')}. `
+        + 'The run was stopped rather than classifying whatever was already in the folder.',
+      );
+    }
+
+    return { reportDate: layout.date.iso, files, empty, poBrowser };
+  } catch (err) {
+    err.screenshot = err.screenshot || await captureFailure(page, err.step || 'portal-run', log);
+    throw err; // fail fast: nothing past the failing report runs
   } finally {
     try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* best effort cleanup */ }
   }
@@ -1093,19 +2036,28 @@ async function fetchDailyInputs({ layout, credentials = {}, log }) {
 
     const result = await pullFromPortal({ layout, credentials, log });
 
-    const present = result.files.filter((f) => fs.existsSync(f));
-    if (present.length !== result.files.length) {
-      log.warn(`${result.files.length - present.length} expected download(s) did not appear on disk`);
+    // runReports() already stops the run if a download never landed on disk,
+    // so this is belt-and-braces — kept as a hard stop rather than a warning
+    // so a future change to runReports() cannot quietly reopen this gap.
+    const missing = result.files.filter((f) => !fs.existsSync(f));
+    if (missing.length) {
+      throw new Error(
+        `${missing.length} expected download(s) did not appear on disk: `
+        + `${missing.map((f) => path.basename(f)).join(', ')}. `
+        + 'The run was stopped rather than classifying whatever was already in the folder.',
+      );
     }
-    log.ok(`pulled ${present.length} file(s)`);
+    log.ok(`pulled ${result.files.length} file(s)`);
 
-    return { files: present, date: result.reportDate, poBrowser: result.poBrowser };
+    return { files: result.files, date: result.reportDate, poBrowser: result.poBrowser };
   } finally {
     close();
   }
 }
 
 module.exports = {
+  reportPageLooksOpen,
+  describePage,
   fetchDailyInputs,
   pullFromPortal,
   startSession,
@@ -1115,4 +2067,25 @@ module.exports = {
   verifyAuthentication,
   isAvailable,
   REPORTS,
+  navigateToReport,
+  clickMenuItemByText,
+  ensureSidebarOpen,
+  findFieldByLabel,
+  focusAndType,
+  realClick,
+  // Exported so the alert-capture path can be exercised against a local page
+  // that alerts on load, without standing up a whole portal session.
+  attachDialogCapture,
+  captureDialogsEverywhere,
+  takeDialog,
+  // Exported for tools/inspect-purchase-form.js, which drives the Purchase
+  // Report form one control at a time to see what each one actually does to
+  // the result.
+  setDateRange,
+  selectDropdownValue,
+  selectAllOptions,
+  selectReportFormat,
+  runReportAndWaitForDownload,
+  waitForFieldByLabel,
+  allFrames,
 };
