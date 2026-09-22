@@ -41,6 +41,7 @@ const FIELD_LABELS = {
 /** Columns G and J are money; the rest of C-J are counts. */
 const MONEY_FIELDS = new Set(['G', 'J']);
 const MONEY_FORMAT = '#,##0.00';
+const SUNDAY_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } };
 
 /**
  * Open the month's master, creating it from the embedded reference format if
@@ -178,6 +179,12 @@ function applyRowStyle(ws, row, seedStyle) {
   }
 }
 
+/** Highlight every cell in a Sunday date row without changing its values. */
+function applySundayHighlight(row, isSunday) {
+  if (!isSunday) return;
+  for (let c = 1; c <= LAST_COLUMN; c += 1) row.getCell(c).fill = JSON.parse(JSON.stringify(SUNDAY_FILL));
+}
+
 /** Renumber column A 1..n over the rows that carry a date. */
 function renumber(ws) {
   const last = lastRowNumber(ws);
@@ -214,6 +221,7 @@ async function writeDailyRow({ masterFile, date, fields, log, dryRun = false }) 
   const dateCell = row.getCell(2);
   dateCell.value = date.date;
   if (!dateCell.numFmt) dateCell.numFmt = 'dd-mm-yyyy';
+  applySundayHighlight(row, date.date.getUTCDay() === 0);
 
   const changes = [];
   for (const [field, col] of Object.entries(FIELD_COLUMNS)) {

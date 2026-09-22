@@ -172,6 +172,31 @@ async function main() {
   check('two date rows now', next.write.totalRows, 2);
   check('same master file', next.layout.masterFile, run.layout.masterFile);
 
+  const sundayWb = new ExcelJS.Workbook();
+  await sundayWb.xlsx.readFile(next.layout.masterFile);
+  const sundayWs = sundayWb.getWorksheet('Daily Report');
+  check('Sunday row is yellow across the row', sundayWs.getCell('A4').fill.fgColor.argb, 'FFFFFF00');
+  check('Sunday row keeps mapped values', sundayWs.getCell('J4').value, 2656763.31);
+  truthy(
+    'weekday row is not yellow',
+    sundayWs.getCell('A3').fill.pattern !== 'solid'
+      || sundayWs.getCell('A3').fill.fgColor?.argb !== 'FFFFFF00',
+  );
+
+  const sundayRerun = await runDailyReport({
+    archiveRoot: root,
+    inputFolder: scratch,
+    reportDate: '2026-08-09',
+  });
+  truthy('Sunday re-run succeeded', sundayRerun.ok, sundayRerun.error || '');
+  const sundayRerunWb = new ExcelJS.Workbook();
+  await sundayRerunWb.xlsx.readFile(sundayRerun.layout.masterFile);
+  check(
+    'existing Sunday row remains yellow after update',
+    sundayRerunWb.getWorksheet('Daily Report').getCell('Q4').fill.fgColor.argb,
+    'FFFFFF00',
+  );
+
   section('A new month starts a new master at row 1');
   const newMonth = await runDailyReport({
     archiveRoot: root,

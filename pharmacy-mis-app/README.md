@@ -69,7 +69,7 @@ code that guards against it:
   `selectDropdownValue()` (used for GRN Type / GRN Status) leaves its dropdown
   list open over the form, and the first of the two clicks the tax-scheme
   selection needs is spent closing that overlay instead of anchoring the
-  range — again invisible in the DOM afterwards. `runPurchaseReport()` selects
+  range — again invisible in the DOM afterwards. `runGrnReport()` selects
   the tax schemes first for this reason, and `selectAllByRealClicks()` also
   presses Escape before it starts, so the order does not have to be perfect
   every time it is called.

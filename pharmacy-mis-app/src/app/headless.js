@@ -179,7 +179,7 @@ async function runCli(opts) {
     say(Object.entries(result.fields).map(([k, v]) => k + '=' + (v == null ? '-' : v)).join('  '));
     say((result.write.written ? 'saved: ' : 'preview: ') + result.layout.masterFile);
     say('row ' + result.write.row + ' ' + result.write.mode + ', ' + result.write.totalRows + ' date row(s)');
-    if (result.poBrowser) say('Pharmacy PO Browser total rows: ' + result.poBrowser.totalRows);
+    if (result.portalFiles) say('Portal reports downloaded: ' + result.portalFiles.length);
   }
 
   return result.ok ? 0 : 1;

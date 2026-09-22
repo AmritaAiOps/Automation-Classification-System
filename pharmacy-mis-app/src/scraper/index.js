@@ -8,12 +8,11 @@
  * One authenticated Puppeteer session:
  *   1. logs in to Amrita HIS with the username/password the application UI
  *      collected (the user never types into the browser — see login() below)
- *   2. Purchase Report Pharmacy Detail  -> CSV download  (GRN Type/Status = All)
- *   3. Received Items Pharmacy          -> CSV download
- *   4. Pharmacy PO Browser              -> Search, Delivery/Creation Status =
- *      ALL, Limit = 999, and reads back "Total rows"
+ *   2. Pharmacy PRQ Details             -> CSV download
+ *   3. Purchase Order Detail Report - Pharmacy -> CSV download
+ *   4. Purchase Report Pharmacy Detail  -> CSV download  (GRN Type/Status = All)
  *
- * The two downloaded CSVs land in layout.dayInputsDir, exactly where the
+ * The three downloaded CSVs land in layout.dayInputsDir, exactly where the
  * existing mapping pipeline (src/pipeline.js) already looks for its inputs.
  * That pipeline identifies files by the COLUMNS they carry, not by filename
  * (see src/core/detect.js), so nothing here needs to know or guess which of
@@ -79,9 +78,9 @@ async function loadPuppeteer() {
 
 /** Shown in the UI's "portal pull" badge. Purely informational. */
 const REPORTS = [
-  { key: 'PURCHASE', label: 'Purchase Report Pharmacy Detail', exportAs: 'CSV' },
-  { key: 'RECEIVED', label: 'Received Items Pharmacy', exportAs: 'CSV' },
-  { key: 'POBROWSER', label: 'Pharmacy PO Browser (Total rows)', exportAs: 'Search' },
+  { key: 'PRQ', label: 'Pharmacy PRQ Details', exportAs: 'CSV' },
+  { key: 'PO', label: 'Purchase Order Detail Report - Pharmacy', exportAs: 'CSV' },
+  { key: 'GRN', label: 'Purchase Report Pharmacy Detail', exportAs: 'CSV' },
 ];
 
 /**
@@ -566,13 +565,14 @@ async function openControl(handle) {
  *
  * The Purchase Tax Scheme list opens with one: blank text, and a value that is
  * every other option's id joined by commas. It is the list's own internal
- * "everything" entry, it renders as an empty row nobody clicks, and selecting
- * it alongside the real options sends the whole list twice. Real options only,
- * here and in the audit, so both agree on what "all of them" means.
+ * "everything" entry, it renders as an empty row nobody clicks. Other HIS
+ * multi-selects expose an explicit "ALL" row; that is also an alias rather
+ * than an individual value. Real options only, here and in the audit, so both
+ * agree on what "all of them" means.
  */
 const REAL_OPTIONS = (el) => [...el.options]
   .map((o, i) => ({ i, text: (o.textContent || '').trim(), value: o.value }))
-  .filter((o) => o.text !== '');
+  .filter((o) => o.text !== '' && !/^all$/i.test(o.text));
 
 /**
  * Select every real option in a <select multiple> by clicking the first and
@@ -606,7 +606,7 @@ async function selectAllByRealClicks(page, field, labelText, log) {
   // first click, or that click is spent closing it instead of anchoring the
   // range — and the DOM will still look right afterwards, so nothing downstream
   // would notice. Escape closes an open combo list; the ordering in
-  // runPurchaseReport() means there should be nothing to close, and this is
+  // the report runners select fields before execution, so there should be nothing to close, and this is
   // here so that stops being something the caller has to get right.
   await page.keyboard.press('Escape').catch(() => {});
   await sleep(150);
@@ -637,7 +637,10 @@ async function selectAllByRealClicks(page, field, labelText, log) {
     log.warn(`${labelText}: could not be selected by clicking (${err.message}). `
       + 'Falling back to setting the selection directly, which this portal may ignore.');
     return field.evaluate((el) => {
-      const real = [...el.options].filter((o) => (o.textContent || '').trim() !== '');
+      const real = [...el.options].filter((o) => {
+        const text = (o.textContent || '').trim();
+        return text !== '' && !/^all$/i.test(text);
+      });
       real.forEach((o) => { o.selected = true; });
       el.dispatchEvent(new Event('change', { bubbles: true }));
       return real.length;
@@ -655,8 +658,8 @@ async function selectAllByRealClicks(page, field, labelText, log) {
   return got;
 }
 
-async function selectAllOptions(page, labelText, log) {
-  const field = await findFieldByLabel(page, labelText);
+async function selectAllOptions(page, labelText, log, { exact = false } = {}) {
+  const field = await findFieldByLabel(page, labelText, { exact });
   if (!field) throw new Error(`field not found`);
 
   const tag = await field.evaluate((el) => el.tagName);
@@ -694,6 +697,58 @@ async function selectAllOptions(page, labelText, log) {
 
   if (!result.usedSelectAll && result.count === 0) throw new Error('no options found in the dropdown panel');
   log.ok(`${labelText} = ALL${result.count ? ` (${result.count} option(s))` : ''}`);
+}
+
+/**
+ * Select every visible native multi-select that represents a report filter.
+ * The PO report has changed its status-field set across portal deployments,
+ * so Creation Status and Processing Status are selected explicitly below,
+ * while this discovery pass catches additional status/filter lists without
+ * hard-coding their names.
+ */
+async function selectAllVisibleMultiSelects(page, log, { exclude = [] } = {}) {
+  const excluded = new Set(exclude.map((s) => String(s).replace(/\s+/g, ' ').trim().toLowerCase()));
+  const labels = new Set();
+
+  for (const frame of allFrames(page)) {
+    try {
+      const found = await frame.evaluate(() => {
+        const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+        const visible = (el) => {
+          if (!el || el.disabled || el.offsetParent === null) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+        const labelFor = (el) => {
+          if (el.id) {
+            const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+            if (lab && norm(lab.textContent)) return norm(lab.textContent);
+          }
+          const cell = el.closest('td');
+          if (cell && cell.previousElementSibling && norm(cell.previousElementSibling.textContent)) {
+            return norm(cell.previousElementSibling.textContent);
+          }
+          let prev = el.previousElementSibling;
+          for (let i = 0; i < 3 && prev; i += 1) {
+            if (norm(prev.textContent)) return norm(prev.textContent);
+            prev = prev.previousElementSibling;
+          }
+          return norm(el.getAttribute('aria-label') || el.name || el.id);
+        };
+        return [...document.querySelectorAll('select[multiple]')]
+          .filter(visible)
+          .map(labelFor)
+          .filter(Boolean);
+      });
+      for (const label of found) labels.add(label);
+    } catch { /* frame may be navigating */ }
+  }
+
+  for (const label of labels) {
+    if (excluded.has(label.toLowerCase())) continue;
+    await selectAllOptions(page, label, log, { exact: true });
+  }
+  return [...labels].filter((label) => !excluded.has(label.toLowerCase()));
 }
 
 /**
@@ -758,11 +813,12 @@ async function auditFormFields(page, label, log) {
           .map((el) => {
             const base = { label: labelFor(el), tag: el.tagName.toLowerCase(), type: el.type || '' };
             if (el.tagName === 'SELECT') {
-              // Real options only — an unlabelled entry is the list's own
-              // internal "everything" value, not a choice. Counting it made
-              // this audit demand 52/52 on a list whose full selection is 51,
-              // which is the opposite of the mistake it exists to catch.
-              const real = [...el.options].filter((o) => (o.textContent || '').trim() !== '');
+              // Real options only — blank entries and the portal's explicit
+              // ALL row are aliases/controls, not individual choices.
+              const real = [...el.options].filter((o) => {
+                const text = (o.textContent || '').trim();
+                return text !== '' && !/^all$/i.test(text);
+              });
               return {
                 ...base,
                 multiple: el.multiple,
@@ -1022,6 +1078,12 @@ async function runReportAndWaitForDownload(page, { downloadDir, label }, log) {
   await routeDownloadsTo(page, downloadDir);
 
   const audit = await auditFormFields(page, label, log);
+  if (!audit.complete) {
+    throw new Error(
+      `${label}: one or more multi-select filters are not fully selected: `
+      + `${audit.underselected.join(', ')}`,
+    );
+  }
 
   const clicked = await clickButtonByText(page, 'Run Report');
   if (!clicked) throw new Error(`${label} download timed out: the "Run Report" control was not found.`);
@@ -1588,7 +1650,7 @@ async function readTotalRows(page, log) {
  * The three reports
  * ------------------------------------------------------------------ */
 
-async function runPurchaseReport(page, { reportDate, downloadDir }, log) {
+async function runGrnReport(page, { reportDate, downloadDir }, log) {
   const close = log.step('Purchase Report Pharmacy Detail');
   try {
     await navigateToReport(page, 'Purchase Report Pharmacy Detail', log);
@@ -1626,6 +1688,10 @@ async function runPurchaseReport(page, { reportDate, downloadDir }, log) {
     catch (err) { throw new Error(`Could not set GRN Status to ALL: ${err.message}`); }
     log.ok('GRN Status = ALL');
 
+    await selectAllVisibleMultiSelects(page, log, {
+      exclude: ['Purchase Tax Scheme'],
+    });
+
     await selectReportFormat(page, 'CSV', log);
     return await runReportAndWaitForDownload(page, { downloadDir, label: 'Purchase Report Pharmacy Detail' }, log);
   } finally {
@@ -1633,51 +1699,40 @@ async function runPurchaseReport(page, { reportDate, downloadDir }, log) {
   }
 }
 
-async function runReceivedItemsReport(page, { reportDate, downloadDir }, log) {
-  const close = log.step('Received Items Pharmacy');
+async function runPrqReport(page, { reportDate, downloadDir }, log) {
+  const close = log.step('Pharmacy PRQ Details');
   try {
-    await navigateToReport(page, 'Received Items Pharmacy', log);
+    await navigateToReport(page, 'Pharmacy PRQ Details', log);
     await setDateRange(page, reportDate, reportDate, log);
+    await selectAllVisibleMultiSelects(page, log);
     await selectReportFormat(page, 'CSV', log);
-    return await runReportAndWaitForDownload(page, { downloadDir, label: 'Received Items Pharmacy' }, log);
+    return await runReportAndWaitForDownload(page, { downloadDir, label: 'Pharmacy PRQ Details' }, log);
   } finally {
     close();
   }
 }
 
-async function runPOBrowser(page, { reportDate }, log) {
-  const close = log.step('Pharmacy PO Browser');
+async function runPoReport(page, { reportDate, downloadDir }, log) {
+  const close = log.step('Purchase Order Detail Report - Pharmacy');
   try {
-    await navigateToReport(page, 'Pharmacy PO Browser', log);
+    await navigateToReport(page, 'Purchase Order Detail Report - Pharmacy', log);
     await setDateRange(page, reportDate, reportDate, log);
-
-    try { await selectAllOptions(page, 'Delivery Status', log); }
-    catch (err) { throw new Error(`Could not select all Delivery Status options: ${err.message}`); }
 
     try { await selectAllOptions(page, 'Creation Status', log); }
     catch (err) { throw new Error(`Could not select all Creation Status options: ${err.message}`); }
 
-    await setLimit(page, 999, log);
+    try { await selectAllOptions(page, 'Processing Status', log); }
+    catch (err) { throw new Error(`Could not select all Processing Status options: ${err.message}`); }
 
-    await auditFormFields(page, 'Pharmacy PO Browser', log);
-
-    const clicked = await clickButtonByText(page, 'Search');
-    if (!clicked) throw new Error('Pharmacy PO Browser search did not complete: the Search control was not found.');
-    log.info('search submitted, waiting for results…');
-    // Swallowed deliberately: confirmed against a live run that this portal
-    // carries a background widget (Instabug's feedback SDK, visible in its
-    // own DOM) that polls continuously, so a full 800ms of network silence
-    // may never actually happen even after a perfectly successful search —
-    // it is not a signal this portal can be relied on to produce. The real
-    // gate is readTotalRows() below, which already polls the page's own text
-    // for "Total rows" up to TIMEOUTS.search rather than trusting a timing
-    // window at all.
-    await page.waitForNetworkIdle({ idleTime: 800, timeout: TIMEOUTS.search }).catch(() => null);
-    await assertSessionAlive(page);
-    log.ok('search complete');
-
-    const totalRows = await readTotalRows(page, log);
-    return { totalRows };
+    await selectAllVisibleMultiSelects(page, log, {
+      exclude: ['Creation Status', 'Processing Status'],
+    });
+    await selectReportFormat(page, 'CSV', log);
+    return await runReportAndWaitForDownload(
+      page,
+      { downloadDir, label: 'Purchase Order Detail Report - Pharmacy' },
+      log,
+    );
   } finally {
     close();
   }
@@ -1944,17 +1999,21 @@ async function runReports(session, { layout }, log) {
   ensureDir(stagingDir);
 
   try {
-    const purchaseReportFile = await runPurchaseReport(
+    const prqFile = await runPrqReport(
       page,
       { reportDate: layout.date.iso, downloadDir: stagingDir },
       log,
     );
-    const receivedItemsFile = await runReceivedItemsReport(
+    const poFile = await runPoReport(
       page,
       { reportDate: layout.date.iso, downloadDir: stagingDir },
       log,
     );
-    const poBrowser = await runPOBrowser(page, { reportDate: layout.date.iso }, log);
+    const grnFile = await runGrnReport(
+      page,
+      { reportDate: layout.date.iso, downloadDir: stagingDir },
+      log,
+    );
 
     // A report the portal said was empty has no file to move, and is recorded
     // by name instead — the distinction between "no data for this date" and "a
@@ -1962,8 +2021,9 @@ async function runReports(session, { layout }, log) {
     const empty = [];
     const files = [];
     for (const [file, name] of [
-      [purchaseReportFile, 'Purchase-Report-Pharmacy-Detail'],
-      [receivedItemsFile, 'Received-Items-Pharmacy'],
+      [prqFile, 'Pharmacy-PRQ-Details'],
+      [poFile, 'Purchase-Order-Detail-Report-Pharmacy'],
+      [grnFile, 'Purchase-Report-Pharmacy-Detail'],
     ]) {
       if (file) files.push(movePortalFile(file, layout.dayInputsDir, name, layout.date.iso));
       else empty.push(name);
@@ -1983,7 +2043,7 @@ async function runReports(session, { layout }, log) {
       );
     }
 
-    return { reportDate: layout.date.iso, files, empty, poBrowser };
+    return { reportDate: layout.date.iso, files, empty };
   } catch (err) {
     err.screenshot = err.screenshot || await captureFailure(page, err.step || 'portal-run', log);
     throw err; // fail fast: nothing past the failing report runs
@@ -2049,7 +2109,7 @@ async function fetchDailyInputs({ layout, credentials = {}, log }) {
     }
     log.ok(`pulled ${result.files.length} file(s)`);
 
-    return { files: result.files, date: result.reportDate, poBrowser: result.poBrowser };
+    return { files: result.files, date: result.reportDate };
   } finally {
     close();
   }
@@ -2073,6 +2133,9 @@ module.exports = {
   findFieldByLabel,
   focusAndType,
   realClick,
+  selectAllOptions,
+  selectAllVisibleMultiSelects,
+  auditFormFields,
   // Exported so the alert-capture path can be exercised against a local page
   // that alerts on load, without standing up a whole portal session.
   attachDialogCapture,

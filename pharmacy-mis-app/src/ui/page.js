@@ -45,13 +45,16 @@ function page(token) {
   /* ---- title bar ---- */
   header {
     display: flex; align-items: center; gap: 12px;
-    padding: 10px 16px;
+    padding: 10px 16px; min-width: 0;
     background: linear-gradient(180deg, #1b2431, #151d27);
     border-bottom: 1px solid var(--line);
   }
-  header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .2px; }
-  header .sub { color: var(--ink-faint); font-size: 12px; }
-  header .spacer { flex: 1; }
+  header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .2px; flex: 0 0 auto; }
+  header .sub {
+    color: var(--ink-faint); font-size: 12px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  header .spacer { flex: 1; min-width: 8px; }
   .badge {
     font-size: 11px; padding: 3px 8px; border-radius: 999px;
     border: 1px solid var(--line); color: var(--ink-dim); background: #131a23;
@@ -60,9 +63,9 @@ function page(token) {
   .badge.off  { color: var(--ink-faint); }
 
   /* ---- layout ---- */
-  main { display: grid; grid-template-columns: 380px 1fr; min-height: 0; }
+  main { display: grid; grid-template-columns: 380px minmax(0, 1fr); min-height: 0; }
   .left  { border-right: 1px solid var(--line); overflow-y: auto; padding: 14px; }
-  .right { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+  .right { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; min-height: 0; }
 
   /*
    * The Dashboard (archive root, source files, manual run, results, log) is
@@ -135,7 +138,7 @@ function page(token) {
 
   /* ---- results strip ---- */
   .results {
-    display: grid; grid-template-columns: repeat(8, 1fr);
+    display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));
     gap: 1px; background: var(--line);
     border-bottom: 1px solid var(--line);
   }
@@ -208,8 +211,11 @@ function page(token) {
   [hidden] { display: none !important; }
 
   /* ---- login card ---- */
-  .datepair { display: flex; gap: 10px; margin-bottom: 10px; align-items: stretch; }
-  .datepair .box { flex: 1; background: #0e141b; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; }
+  .datepair { display: flex; gap: 10px; margin-bottom: 10px; align-items: stretch; min-width: 0; }
+  .datepair .box {
+    flex: 1 1 0; min-width: 0; overflow: hidden;
+    background: #0e141b; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+  }
   .datepair .box .k { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-faint); }
   .datepair .box .v { font: 600 15px/1.4 var(--mono); color: var(--ink); margin-top: 2px; }
   .datepair .box.report .v { color: var(--accent); }
@@ -217,9 +223,13 @@ function page(token) {
      both use it, so it lives here, next to "Reports to process", rather than
      being a separate control a person could miss further down the form. */
   .datepair .box.report { display: flex; flex-direction: column; padding: 5px 7px; }
-  .datepair .box.report .row { display: flex; gap: 6px; margin-top: 2px; align-items: center; }
+  .datepair .box.report .row {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px;
+    align-items: center; min-width: 0;
+  }
   .datepair .box.report input[type=date] {
-    flex: 1; min-width: 0; background: transparent; color: var(--accent);
+    flex: 1 1 145px; width: auto; min-width: 145px;
+    background: transparent; color: var(--accent);
     border: 1px solid transparent; border-radius: 4px;
     padding: 3px 4px; font: 600 15px/1.4 var(--mono);
   }
@@ -667,15 +677,15 @@ function setSigningIn(busy) {
   $('hisPassword').disabled = busy;
 }
 
-function renderPoBrowserSummary(result) {
+function renderPortalSummary(result) {
   const box = $('runSummary');
-  if (!result || !result.poBrowser) { box.hidden = true; box.innerHTML = ''; return; }
+  if (!result || !result.portalFiles) { box.hidden = true; box.innerHTML = ''; return; }
   box.hidden = false;
   box.innerHTML =
-    '<span class="k">Purchase Report Pharmacy Detail</span><span class="v">✓ Downloaded</span>'
-    + '<span class="k">Received Items Pharmacy</span><span class="v">✓ Downloaded</span>'
-    + '<span class="k">Pharmacy PO Browser — searched</span><span class="v">✓ Complete</span>'
-    + '<span class="k">Total PO Browser rows</span><span class="v big">' + esc(result.poBrowser.totalRows) + '</span>';
+    '<span class="k">Pharmacy PRQ Details</span><span class="v">✓ Downloaded</span>'
+    + '<span class="k">Purchase Order Detail Report - Pharmacy</span><span class="v">✓ Downloaded</span>'
+    + '<span class="k">Purchase Report Pharmacy Detail</span><span class="v">✓ Downloaded</span>'
+    + '<span class="k">Reports downloaded</span><span class="v big">' + esc(result.portalFiles.length) + '</span>';
 }
 
 /**
@@ -781,7 +791,7 @@ $('runPortalBtn').onclick = async () => {
   lastRunWasPortal = true;
   setBusy(true);
   setLoginStatus('Running Amrita HIS automation…', 'ok');
-  renderPoBrowserSummary(null);
+  renderPortalSummary(null);
   $('openMaster').disabled = true;
   $('showMaster').disabled = true;
 
@@ -826,7 +836,7 @@ function connect() {
       lastRunWasPortal = false;
       if (r.ok) {
         setLoginStatus('✓ Automation completed. Sign in again to run once more.', 'ok');
-        renderPoBrowserSummary(r);
+        renderPortalSummary(r);
       } else if (r.stage === 'login') {
         setLoginStatus('✗ Amrita HIS session problem: ' + r.error, 'err', r.docLink, r.docLinkLabel);
       } else if (r.stage === 'portal') {
@@ -956,7 +966,7 @@ $('runBtn').onclick = async () => {
   if (!payload.reportDate) { setStatus('Set the report date first.', 'err'); return; }
   form.save();
   lastRunWasPortal = false;
-  renderPoBrowserSummary(null);
+  renderPortalSummary(null);
   setLoginStatus('');
   setBusy(true);
   setStatus('Running…');

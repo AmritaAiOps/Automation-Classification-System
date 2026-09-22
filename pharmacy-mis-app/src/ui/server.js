@@ -261,7 +261,7 @@ const routes = {
           });
         }
         result = await runDailyReport({ archiveRoot: layout.root, reportDate: layout.date.iso, dryRun: false }, sink);
-        if (result.ok) result.poBrowser = pull.poBrowser;
+        if (result.ok) result.portalFiles = pull.files;
         else result.stage = 'automation';
       } catch (err) {
         const message = err && err.message ? err.message : String(err);

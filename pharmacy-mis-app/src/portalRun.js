@@ -39,7 +39,7 @@ async function runWithPortalPull({ archiveRoot, reportDate, credentials, dryRun 
   }
 
   const result = await runDailyReport({ archiveRoot, reportDate, dryRun: !!dryRun }, sink || (() => {}));
-  if (result.ok) result.poBrowser = pull.poBrowser;
+  if (result.ok) result.portalFiles = pull.files;
   else result.stage = 'automation';
   return result;
 }

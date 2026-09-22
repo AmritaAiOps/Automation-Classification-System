@@ -12,6 +12,7 @@
     "start": "electron .",
     "cli": "electron . --cli",
     "test": "node tools/selftest.js",
+    "check-scraper-fields": "node tools/check-scraper-fields.js",
     "icon": "node tools/make-icon.js",
     "build": "node tools/build.js",
     "release-test": "node tools/release-test.js",

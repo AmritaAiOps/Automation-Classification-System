@@ -66,7 +66,7 @@ if (typeof electron === 'string' || !electron.app) {
 const { app, BrowserWindow, dialog, clipboard, shell, Menu } = electron;
 
 const APP_NAME = 'Pharmacy MIS';
-const WINDOW = { width: 1280, height: 840, minWidth: 940, minHeight: 600 };
+const WINDOW = { width: 1280, height: 840, minWidth: 940, minHeight: 600, resizable: true };
 
 /** Set by startup as it advances, so a failure dialog can name the stage. */
 let stage = 'starting up';
@@ -211,6 +211,7 @@ async function startGui() {
     height: WINDOW.height,
     minWidth: WINDOW.minWidth,
     minHeight: WINDOW.minHeight,
+    resizable: WINDOW.resizable,
     title: APP_NAME + ' — Daily Report',
     backgroundColor: '#10151c',
     show: false,
