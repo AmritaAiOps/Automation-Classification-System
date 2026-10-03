@@ -57,5 +57,8 @@
       "requestedExecutionLevel": "asInvoker",
       "signAndEditExecutable": false
     }
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
   }
 }
