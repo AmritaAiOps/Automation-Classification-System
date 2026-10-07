@@ -78,6 +78,13 @@ function broadcast(event, data) {
   }
 }
 
+// The operator closing the Edge window is how a sign-in ends now, so the
+// window has to hear about it and go back to the sign-in fields.
+portalSession.onEnded(() => {
+  log.info('the Amrita HIS Edge window was closed — signed out');
+  broadcast('session-ended', { at: new Date().toISOString() });
+});
+
 function json(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -224,9 +231,13 @@ const routes = {
 
   /**
    * Step 2: run the three Amrita HIS reports against the session /api/login
-   * left waiting, for whichever archive root and report date the user has
-   * chosen on the Dashboard by the time they click Run — not whatever was
-   * (or wasn't) in those fields back when they signed in.
+   * opened, for whichever archive root and report date the user has chosen on
+   * the Dashboard by the time they click Run — not whatever was (or wasn't) in
+   * those fields back when they signed in.
+   *
+   * The session is left open afterwards, win or lose, so Run can be clicked
+   * again without signing in. It is closed here only when the portal itself
+   * has signed it out; otherwise it lasts until the Edge window is closed.
    */
   async 'POST /api/run-portal'(body) {
     if (runInFlight) throw new Error('A run is already in progress.');
@@ -234,7 +245,7 @@ const routes = {
     if (!body.archiveRoot) throw new Error('Choose the archive root folder first.');
     runInFlight = true;
 
-    const { session } = portalSession.take();
+    const session = portalSession.get();
     const reportDate = body.reportDate || getPreviousCalendarDay().iso;
     const layout = resolveLayout(body.archiveRoot, reportDate);
 
@@ -274,10 +285,14 @@ const routes = {
           docLinkLabel: err.docLinkLabel || null,
           log: [],
         };
-      } finally {
-        // eslint-disable-next-line global-require
-        await require('../scraper').closeSession(session);
       }
+      // Signed out on the portal's side (or the browser went away mid-run):
+      // nothing left worth keeping open, and the window has to ask for a fresh
+      // sign-in. Anything else keeps the session for the next Run.
+      if (result.stage === 'login' || !session.browser.connected) {
+        if (portalSession.get() === session) await portalSession.clear();
+      }
+      result.signedIn = portalSession.isActive();
       broadcast('run-end', result);
       logRunOutcome(result, layout.root, layout.date.iso, null);
       return result;

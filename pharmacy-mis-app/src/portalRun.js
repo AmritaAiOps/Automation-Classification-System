@@ -57,6 +57,7 @@ const LOGIN_FAILURE = new RegExp('^(' + [
   'Connected to Amrita HIS, but its sign-in form was not found',
   'Amrita HIS login page could not be loaded', // wording used before the messages above
   'Amrita HIS username and password are required',
+  'Amrita HIS session expired', // signed out on the portal's side between runs
   'Portal pull unavailable',
 ].join('|') + ')', 'i');
 

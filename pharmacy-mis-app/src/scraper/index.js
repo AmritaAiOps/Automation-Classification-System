@@ -352,7 +352,7 @@ async function findFieldByLabel(page, labelText, { exact = false } = {}) {
  * barcode-scanner detection thresholds (usually tens of ms) while still far
  * faster than hand typing.
  */
-async function focusAndType(page, handle, text) {
+async function focusAndType(page, handle, text, { delay = 90 } = {}) {
   await handle.evaluate((el) => {
     if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'nearest' });
     el.focus();
@@ -360,7 +360,7 @@ async function focusAndType(page, handle, text) {
   });
   // The keyboard belongs to the page and types wherever the focus is, so this
   // reaches a field inside a frame without any extra ceremony.
-  await page.keyboard.type(text, { delay: 90 });
+  await page.keyboard.type(text, { delay });
 }
 
 /** Set a form field's value the way a framework-controlled input expects — through the native setter, so React/Angular/Vue see the change. */
@@ -402,9 +402,9 @@ async function realClick(page, handle) {
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
     await page.mouse.move(x, y);
-    await sleep(100);
+    await sleep(50);
     await page.mouse.down();
-    await sleep(120);
+    await sleep(60);
     await page.mouse.up();
     return;
   }
@@ -609,7 +609,7 @@ async function selectAllByRealClicks(page, field, labelText, log) {
   // the report runners select fields before execution, so there should be nothing to close, and this is
   // here so that stops being something the caller has to get right.
   await page.keyboard.press('Escape').catch(() => {});
-  await sleep(150);
+  await sleep(80);
 
   const handles = await field.$$('option');
   const first = options[0].i;
@@ -619,7 +619,7 @@ async function selectAllByRealClicks(page, field, labelText, log) {
     const handle = handles[index];
     if (!handle) throw new Error(`no option at index ${index}`);
     await handle.evaluate((el) => el.scrollIntoView({ block: 'nearest' }));
-    await sleep(120);
+    await sleep(60);
     const box = await handle.boundingBox();
     if (!box) throw new Error(`option ${index} has no clickable box`);
     if (withShift) await page.keyboard.down('Shift');
@@ -627,7 +627,7 @@ async function selectAllByRealClicks(page, field, labelText, log) {
     // and the middle of the box can land outside the visible list area.
     await page.mouse.click(box.x + Math.min(box.width / 2, 60), box.y + box.height / 2);
     if (withShift) await page.keyboard.up('Shift');
-    await sleep(120);
+    await sleep(60);
   };
 
   try {
@@ -964,7 +964,12 @@ async function captureDialogsEverywhere(browser, log) {
           // showing, which is the right outcome and not worth reporting.
           await session.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
         });
-        await session.send('Page.enable');
+        // Capped, so a target that never answers (Edge's own download panel,
+        // while Edge is behind another window) cannot hold up the resume below.
+        await withTimeout(session.send('Page.enable'), 5000, new Error('Page.enable did not answer'));
+        // The report tab builds its CSV while the Pharmacy MIS window is in
+        // front; telling it it has focus keeps Edge from throttling it.
+        await withTimeout(session.send('Emulation.setFocusEmulationEnabled', { enabled: true }), 3000, null).catch(() => {});
       }
     } catch (err) {
       log.debug(`alert capture could not be armed for ${targetInfo.url || 'a new tab'}: ${err.message}`);
@@ -1041,8 +1046,12 @@ async function waitForNewDownload(dir, before, { timeout = TIMEOUTS.download, la
       const seconds = Math.round((Date.now() - startedAt) / 1000);
       let where = '';
       try {
-        const pages = await page.browser().pages();
-        where = pages.map((p) => shortUrl(p.url())).join(' | ');
+        // targets(), not pages(): pages() attaches to every tab and can hang
+        // on Edge's own download panel (see closeLeftoverReportTabs()).
+        where = page.browser().targets()
+          .filter((t) => t.type() === 'page')
+          .map((t) => shortUrl(t.url()))
+          .join(' | ');
       } catch { where = '(could not read the open pages)'; }
       log.info(`still waiting after ${seconds}s — open tab(s): ${where}`);
     }
@@ -1057,7 +1066,7 @@ async function waitForNewDownload(dir, before, { timeout = TIMEOUTS.download, la
       throw err;
     }
 
-    await sleep(500);
+    await sleep(250);
   }
   if (!candidate) throw new Error(`${label} download timed out.`);
 
@@ -1067,7 +1076,7 @@ async function waitForNewDownload(dir, before, { timeout = TIMEOUTS.download, la
     try { size = fs.statSync(candidate).size; } catch { size = -1; }
     if (size === lastSize && size > 0) return candidate;
     lastSize = size;
-    await sleep(400);
+    await sleep(250);
   }
   throw new Error(`${label} download timed out (file never finished writing).`);
 }
@@ -1272,7 +1281,7 @@ async function verifyAuthentication(page, log) {
 async function assertSessionAlive(page) {
   const backAtLogin = /\/protocol\/openid-connect\/auth/i.test(page.url())
     || await page.$(SELECTORS.login.username).then(Boolean).catch(() => false);
-  if (backAtLogin) throw new Error('Amrita HIS session expired. Please run the automation again.');
+  if (backAtLogin) throw new Error('Amrita HIS session expired. Please sign in again.');
 }
 
 /* ------------------------------------------------------------------ *
@@ -1372,7 +1381,7 @@ async function ensureSidebarOpen(page) {
 
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline && (await isClosed().catch(() => false))) {
-    await sleep(150);
+    await sleep(100);
   }
 }
 
@@ -1406,20 +1415,70 @@ async function ensureSidebarOpen(page) {
  * is the failure that killed the third report of a three-report run.
  */
 async function closeLeftoverReportTabs(page, log) {
-  let pages;
-  try { pages = await page.browser().pages(); } catch { return; }
-  for (const other of pages) {
-    if (other === page) continue;
-    let url = '';
-    try { url = other.url(); } catch { continue; }
-    if (!/amritareports/i.test(url)) continue;
-    log.debug(`closing the leftover report tab at ${shortUrl(url)}`);
-    await other.close().catch(() => { /* already gone */ });
+  // Deliberately NOT browser.pages(). That attaches Puppeteer to every
+  // tab-like target in Edge and waits for all of them, and Edge's own download
+  // panel (which pops up after each report downloads) is one of them. While
+  // Edge sits behind another window that panel never answers, so the run
+  // stalled right here — after a report had downloaded, on the way back home —
+  // until someone clicked Edge and the panel closed. Confirmed live.
+  //
+  // Instead, read the tab list straight from the browser and close the report
+  // tabs by id: nothing here attaches to any tab, so nothing can hang on one.
+  let client;
+  try {
+    const browser = page.browser();
+    if (!browser.__tabsClient) browser.__tabsClient = await browser.target().createCDPSession();
+    client = browser.__tabsClient;
+  } catch { return; }
+
+  const listed = await withTimeout(client.send('Target.getTargets'), 5000, null).catch(() => null);
+  for (const info of (listed && listed.targetInfos) || []) {
+    if (info.type !== 'page' || !/amritareports/i.test(info.url || '')) continue;
+    log.info(`closing the leftover report tab at ${shortUrl(info.url)}`);
+    await withTimeout(client.send('Target.closeTarget', { targetId: info.targetId }), 5000, null)
+      .catch(() => { /* already gone */ });
   }
+}
+
+/** Resolve with fallback (or reject, if fallback is an Error) if promise has not settled within ms. */
+function withTimeout(promise, ms, fallback) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      timer = setTimeout(() => (fallback instanceof Error ? reject(fallback) : resolve(fallback)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Make the driven tab behave as if it were the one being looked at.
+ *
+ * Running a report opens the portal's own report tab, which pushes the driven
+ * tab into the background; with the Pharmacy MIS window in front of Edge, the
+ * whole Edge window is hidden as well. Edge then slows or freezes the page
+ * (sleeping tabs / efficiency mode), and confirmed live the run sat for minutes
+ * on its way back to the portal home until Edge was clicked. Bringing the tab
+ * to the front, telling it that it has focus, and forcing its lifecycle back
+ * to "active" undoes all three, whatever window is actually on top.
+ */
+async function keepPageActive(page) {
+  // Every call capped: this is a nicety, and must never become the next thing
+  // the run waits on.
+  await withTimeout(page.bringToFront(), 3000, null).catch(() => {});
+  try {
+    if (!page.__keepActiveClient) {
+      page.__keepActiveClient = await withTimeout(page.createCDPSession(), 3000, new Error('timed out'));
+    }
+    const client = page.__keepActiveClient;
+    await withTimeout(client.send('Emulation.setFocusEmulationEnabled', { enabled: true }), 3000, null).catch(() => {});
+    await withTimeout(client.send('Page.setWebLifecycleState', { state: 'active' }), 3000, null).catch(() => {});
+  } catch { /* best effort — the flags at launch cover most of this anyway */ }
 }
 
 async function returnToPortalHome(page, log) {
   await closeLeftoverReportTabs(page, log);
+  await keepPageActive(page);
 
   // Being on the home page's URL is not the same as being on a clean copy of
   // it. The portal loads each report into a frame of index.jsp and leaves that
@@ -1431,11 +1490,19 @@ async function returnToPortalHome(page, log) {
     .some((f) => !f.detached && /amritareports/i.test(f.url()));
   if (/Core_Common\/index\.jsp/i.test(page.url()) && !carryingReportFrames) return;
 
-  log.debug(carryingReportFrames
+  log.info(carryingReportFrames
     ? 'the last report\'s frame is still attached — reloading the portal home'
     : `leaving ${page.url()} — back to the portal home first`);
   await page.goto(PORTAL_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
-  await sleep(500);
+
+  // Wait for the menu to actually be there rather than a fixed half-second:
+  // usually it is ready well before that, occasionally it is not.
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const ready = await someFrame(page, () => !!document.querySelector('.sidebar-toggler, .page-sidebar, input[placeholder*="search" i]'));
+    if (ready) break;
+    await sleep(100);
+  }
 }
 
 async function navigateToReport(page, reportLabel, log) {
@@ -1454,7 +1521,7 @@ async function navigateToReport(page, reportLabel, log) {
     const searchBoxDeadline = Date.now() + 5000;
     while (!searchBox && Date.now() < searchBoxDeadline) {
       searchBox = await findFieldByLabel(page, 'search');
-      if (!searchBox) await sleep(200);
+      if (!searchBox) await sleep(100);
     }
 
     let opened = false;
@@ -1489,7 +1556,10 @@ async function navigateToReport(page, reportLabel, log) {
           return [...document.querySelectorAll('li, a, div[role="option"], td')]
             .some((el) => el.offsetParent !== null && norm(el.textContent) === want);
         },
-        { timeout: 8000 },
+        // Polled on a timer, not Puppeteer's default requestAnimationFrame:
+        // a page in a hidden window never paints, so rAF never fires and this
+        // would always sit out its full timeout.
+        { timeout: 8000, polling: 100 },
         reportLabel,
       ).catch(() => {});
       opened = await clickMenuItemByText(page, reportLabel)
@@ -1529,7 +1599,7 @@ async function navigateToReport(page, reportLabel, log) {
     while (!looksOpen && Date.now() < reportOpenDeadline) {
       await assertSessionAlive(page);
       looksOpen = await reportPageLooksOpen(page, reportLabel);
-      if (!looksOpen) await sleep(300);
+      if (!looksOpen) await sleep(100);
     }
     if (!looksOpen) {
       throw new Error(`${reportLabel} page could not be located: the entry was clicked but the report form has not appeared yet.${await describePage(page)}`);
@@ -1561,7 +1631,7 @@ async function waitForFieldByLabel(page, labelText, timeout = 5000) {
   const deadline = Date.now() + timeout;
   let field = await findFieldByLabel(page, labelText);
   while (!field && Date.now() < deadline) {
-    await sleep(200);
+    await sleep(100);
     field = await findFieldByLabel(page, labelText);
   }
   return field;
@@ -1573,26 +1643,46 @@ async function setDateRange(page, fromIso, toIso, log) {
 
   const fromField = await waitForFieldByLabel(page, 'from date');
   if (!fromField) throw new Error('Could not set From Date.');
-  await setDateFieldValue(page, fromField, fromText);
+  await setDateFieldValue(page, fromField, fromText, 'From Date');
   log.ok(`From Date = ${fromText}`);
 
   const toField = await waitForFieldByLabel(page, 'to date');
   if (!toField) throw new Error('Could not set To Date.');
-  await setDateFieldValue(page, toField, toText);
+  await setDateFieldValue(page, toField, toText, 'To Date');
   log.ok(`To Date = ${toText}`);
 }
 
-async function setDateFieldValue(page, handle, portalDateText) {
+async function setDateFieldValue(page, handle, portalDateText, fieldName = 'the date field') {
+  const readValue = () => handle.evaluate((el) => String(el.value || '').trim());
+
   // Typed rather than assigned: these are date pickers, and they keep their
-  // own state in sync off keystrokes. Tab afterwards commits the value the way
-  // leaving the field by hand does.
-  await focusAndType(page, handle, portalDateText);
+  // own state in sync off keystrokes. Select-all + Backspace first, so a
+  // default date, an input mask or anything the picker pre-filled cannot end
+  // up glued to the front or back of what is typed. 30ms/character is plenty
+  // for a date — the slower 90ms only matters for the menu search, where the
+  // barcode listener is watching.
+  await focusAndType(page, handle, '', { delay: 0 });
+  await page.keyboard.down('Control');
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up('Control');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.type(portalDateText, { delay: 30 });
+  // Escape closes a calendar popup the typing may have opened, so it cannot
+  // swallow the next click on the form; Tab commits the value the way leaving
+  // the field by hand does.
+  await page.keyboard.press('Escape').catch(() => {});
   await page.keyboard.press('Tab').catch(() => {});
 
-  // A picker that reformats or rejects what was typed leaves something else
-  // behind, and finding that out here beats a report built on the wrong day.
-  const got = await handle.evaluate((el) => el.value);
-  if (!String(got || '').trim()) throw new Error('the field would not take the date');
+  // The field must hold exactly the date asked for — not merely something.
+  // A wrong day here is a wrong report that looks exactly like a right one.
+  let got = await readValue();
+  if (got !== portalDateText) {
+    await setInputValue(handle, portalDateText);
+    got = await readValue();
+  }
+  if (got !== portalDateText) {
+    throw new Error(`${fieldName} shows "${got}", expected "${portalDateText}"`);
+  }
 }
 
 async function selectReportFormat(page, format, log) {
@@ -1634,7 +1724,7 @@ async function readTotalRows(page, log) {
   const deadline = Date.now() + TIMEOUTS.search;
   let text = await readAll();
   while (!/total\s*rows/i.test(text) && Date.now() < deadline) {
-    await sleep(400);
+    await sleep(200);
     text = await readAll();
   }
 
@@ -1952,6 +2042,16 @@ async function startSession(credentials, log) {
         // itself is fine. This is Puppeteer's own documented fix for exactly
         // that failure (https://pptr.dev/troubleshooting).
         '--edge-skip-compat-layer-relaunch',
+        // Keep the run going while Edge is behind the Pharmacy MIS window.
+        // Without these, Windows reports the Edge window as covered and Edge
+        // throttles it — after ~5 minutes hidden, timers wake at most once a
+        // minute — so the run sat at "back to the portal home" until someone
+        // brought Edge to the front. Puppeteer merges --disable-features with
+        // its own list rather than replacing it.
+        '--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling',
+        '--disable-renderer-backgrounding',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
       ],
     });
   } catch (rawErr) {
@@ -1964,7 +2064,7 @@ async function startSession(credentials, log) {
   let page;
   try {
     page = (await browser.pages())[0] || await browser.newPage();
-    await page.bringToFront();
+    await keepPageActive(page);
     page.setDefaultTimeout(TIMEOUTS.navigation);
     attachDialogCapture(page, log);
     // Awaited: this has to be in place before anything can open a report tab,
@@ -1993,7 +2093,29 @@ async function closeSession(session) {
  * session — the caller does that once it is done with it.
  */
 async function runReports(session, { layout }, log) {
+  // The session now outlives a run, so the operator may have closed the
+  // portal's tab (but not the Edge window) since the last one. The sign-in
+  // lives in the browser's cookies, not the tab, so a fresh tab carries on.
+  if (session.page.isClosed()) {
+    log.info('the portal tab was closed — opening a new one in the same signed-in Edge window');
+    const fresh = await session.browser.newPage();
+    fresh.setDefaultTimeout(TIMEOUTS.navigation);
+    attachDialogCapture(fresh, log);
+    session.page = fresh;
+  }
   const { page } = session;
+  await keepPageActive(page);
+
+  // A fresh copy of the portal home before anything else: the tab may have
+  // been sitting since the last run, and if the portal has signed the session
+  // out on its side in the meantime, this is where that shows — as one clear
+  // "sign in again" rather than a report that could not be found.
+  try {
+    await page.goto(PORTAL_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
+  } catch (err) {
+    throw new Error(describeUnreachable(err));
+  }
+  await assertSessionAlive(page);
   ensureDir(layout.dayInputsDir);
   const stagingDir = path.join(layout.dayInputsDir, `.portal-download-${Date.now()}`);
   ensureDir(stagingDir);

@@ -650,10 +650,13 @@ function showLoginFields() {
   $('loginFields').hidden = false;
   $('runFields').hidden = true;
 }
+let signedInUsername = '';
+function activeUsername() { return signedInUsername; }
 function showRunFields(username) {
+  signedInUsername = username || signedInUsername;
   $('loginFields').hidden = true;
   $('runFields').hidden = false;
-  $('signedInAs').textContent = '✓ Signed in as ' + username + ' — verified';
+  $('signedInAs').textContent = '✓ Signed in as ' + signedInUsername + ' — verified';
 }
 
 /**
@@ -808,9 +811,21 @@ $('runPortalBtn').onclick = async () => {
   } catch (err) {
     setBusy(false);
     setLoginStatus('✗ ' + err.message, 'err', err.docLink, err.docLinkLabel);
-    showLoginFields(); // the session is gone either way — /api/run-portal always closes it
+    // A failed run no longer means a lost sign-in — ask the server whether the
+    // Edge session is still open rather than assuming either way.
+    await syncSignedInFields();
   }
 };
+
+async function syncSignedInFields() {
+  try {
+    const s = await api('/api/status');
+    if (s.signedIn && s.signedInUsername) showRunFields(s.signedInUsername);
+    else showLoginFields();
+  } catch (e) {
+    showLoginFields();
+  }
+}
 
 /* ---------- live event stream ---------- */
 function connect() {
@@ -818,6 +833,11 @@ function connect() {
   es.onopen = () => { $('connBadge').textContent = 'live'; $('connBadge').className = 'badge live'; };
   es.onerror = () => { $('connBadge').textContent = 'reconnecting…'; $('connBadge').className = 'badge off'; };
   es.addEventListener('log', (e) => appendLine(JSON.parse(e.data)));
+  es.addEventListener('session-ended', () => {
+    showLoginFields();
+    // Mid-run, the run-end that follows reports the failure itself.
+    if (!lastRunWasPortal) setLoginStatus('The Amrita HIS Edge window was closed — sign in again to run.', 'err');
+  });
   es.addEventListener('run-start', (e) => {
     const d = JSON.parse(e.data);
     setBusy(true);
@@ -829,13 +849,15 @@ function connect() {
     setBusy(false);
     finishRun(r);
     if (lastRunWasPortal) {
-      // /api/run-portal always closes its session before responding, win or
-      // lose, so either way there is nothing left to Run again without
-      // signing in fresh.
-      showLoginFields();
+      // The Edge session stays signed in after a run unless the portal signed
+      // it out (or Edge was closed) — r.signedIn says which.
+      if (r.signedIn) showRunFields(activeUsername());
+      else showLoginFields();
       lastRunWasPortal = false;
       if (r.ok) {
-        setLoginStatus('✓ Automation completed. Sign in again to run once more.', 'ok');
+        setLoginStatus(r.signedIn
+          ? '✓ Automation completed — still signed in. Run again any time; close the Edge window to sign out.'
+          : '✓ Automation completed. Sign in again to run once more.', 'ok');
         renderPortalSummary(r);
       } else if (r.stage === 'login') {
         setLoginStatus('✗ Amrita HIS session problem: ' + r.error, 'err', r.docLink, r.docLinkLabel);
