@@ -111,27 +111,6 @@ function formatPortalDate(input) {
   return `${String(d.day).padStart(2, '0')}/${String(d.month).padStart(2, '0')}/${d.year}`;
 }
 
-const MAX_RANGE_DAYS = 62;
-
-/**
- * Every date from `from` to `to`, inclusive, as ISO strings. A blank `to`
- * means a single day. Rejects a reversed range and anything longer than
- * MAX_RANGE_DAYS, which is almost certainly a typo.
- */
-function enumerateDates(from, to) {
-  const start = parseReportDate(from);
-  const end = to ? parseReportDate(to) : start;
-  if (end.date < start.date) throw new Error(`"To" date ${end.iso} is before "From" date ${start.iso}.`);
-  const count = Math.round((end.date - start.date) / 86400000) + 1;
-  if (count > MAX_RANGE_DAYS) throw new Error(`Date range covers ${count} days; the limit is ${MAX_RANGE_DAYS}.`);
-  const out = [];
-  for (let i = 0; i < count; i += 1) {
-    const d = new Date(start.date.getTime() + i * 86400000);
-    out.push(fromParts(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()).iso);
-  }
-  return out;
-}
-
 /** Pull a YYYY-MM-DD out of a folder or file name, if one is there. */
 function dateFromName(name) {
   const m = /(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})/.exec(path.basename(String(name || '')));
@@ -151,7 +130,6 @@ function ensureDir(dir) {
 module.exports = {
   resolveLayout,
   parseReportDate,
-  enumerateDates,
   dateFromName,
   ensureDir,
   MONTH_NAMES,

@@ -277,16 +277,14 @@ function page(token) {
         <div class="box report">
           <div class="k">Reports to process</div>
           <div class="row">
-            <input type="date" id="reportDate" title="From date">
-            <span class="k" style="align-self:center">to</span>
-            <input type="date" id="toDate" title="To date (leave blank for a single day)">
+            <input type="date" id="reportDate">
             <button id="todayBtn" class="ghost small" title="Reset to yesterday">Yesterday</button>
           </div>
         </div>
       </div>
       <p class="hint" id="reportDateHint" style="margin:-4px 0 10px;font-size:11px">
-        Set a From date (and optionally a To date) — Sign In and Run fetches every day in the range,
-        one after another. A manual run below uses the From date only.
+        Set to any date — Sign In and Run (or a manual run below) fetches or maps that day's
+        reports, not just yesterday's.
       </p>
       <div id="loginFields">
         <label class="field">
@@ -322,28 +320,57 @@ function page(token) {
     </section>
 
     <section class="card">
-      <h2>1 · Archive</h2>
-      <div class="paths" id="paths">Set the date under "Reports to process" above to see where this run will read and write on the server.</div>
+      <h2>1 · Archive root</h2>
+      <label class="field">
+        <span>Folder that holds (or will hold) <code>Pharmacy-MIS/</code></span>
+        <div class="row">
+          <input type="text" id="archiveRoot" placeholder="C:\\Pharmacy-MIS-Archive">
+          <button id="pickRoot">Browse…</button>
+        </div>
+      </label>
+      <div class="paths" id="paths">Choose a root, and set the date under "Reports to process" above, to see where this run will read and write.</div>
     </section>
 
     <section class="card">
       <h2>2 · Source files</h2>
-      <label class="field">
-        <span>PRQ Details → columns C, D</span>
-        <input type="file" id="filePRQ" accept=".csv,.xlsx">
-      </label>
-      <label class="field">
-        <span>PO Detail Report → columns E, F, G</span>
-        <input type="file" id="filePO" accept=".csv,.xlsx">
-      </label>
-      <label class="field">
-        <span>Purchase Report / GRN → columns H, I, J</span>
-        <input type="file" id="fileGRN" accept=".csv,.xlsx">
-      </label>
-      <p class="hint">
-        Upload the exported reports. Slots are a convenience only — each file is still verified
-        against its column layout, so a file put in the wrong slot is placed correctly anyway.
-      </p>
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tabFolder" aria-selected="true">Inputs folder</button>
+        <button role="tab" id="tabFiles" aria-selected="false">Pick files</button>
+      </div>
+
+      <div id="paneFolder">
+        <label class="field">
+          <span>Dated inputs folder</span>
+          <div class="row">
+            <input type="text" id="inputFolder" placeholder="…\\inputs\\2026-08-08">
+            <button id="pickInput">Browse…</button>
+          </div>
+        </label>
+        <p class="hint">
+          Every <code>.csv</code>/<code>.xlsx</code> in the folder is read and identified by its
+          <b>column layout</b>, so filenames do not matter. Left blank, the conventional
+          <code>inputs/&lt;date&gt;</code> path under the archive root is used.
+        </p>
+      </div>
+
+      <div id="paneFiles" hidden>
+        <label class="field">
+          <span>PRQ Details → columns C, D</span>
+          <div class="row"><input type="text" id="filePRQ" placeholder="not selected"><button data-pick="PRQ">…</button></div>
+        </label>
+        <label class="field">
+          <span>PO Detail Report → columns E, F, G</span>
+          <div class="row"><input type="text" id="filePO" placeholder="not selected"><button data-pick="PO">…</button></div>
+        </label>
+        <label class="field">
+          <span>Purchase Report / GRN → columns H, I, J</span>
+          <div class="row"><input type="text" id="fileGRN" placeholder="not selected"><button data-pick="GRN">…</button></div>
+        </label>
+        <p class="hint">
+          Slots are a convenience only — each file is still verified against its column layout,
+          so a file put in the wrong slot is placed correctly anyway.
+        </p>
+      </div>
     </section>
 
     <section class="card">
@@ -360,7 +387,8 @@ function page(token) {
       </label>
       <button class="primary" id="runBtn">Run daily report</button>
       <div class="row" style="margin-top:8px">
-        <button id="openMaster" class="ghost" disabled style="flex:1">Download master</button>
+        <button id="openMaster" class="ghost" disabled style="flex:1">Open master</button>
+        <button id="showMaster" class="ghost" disabled style="flex:1">Show in folder</button>
       </div>
     </section>
   </div>
@@ -407,27 +435,76 @@ const api = async (path, body) => {
 };
 
 /* ---------- persisted form state ---------- */
+const STATE_KEY = 'pharmacy-mis-state';
 const form = {
   read() {
-    return { reportDate: $('reportDate').value.trim(), dryRun: $('dryRun').checked };
+    return {
+      archiveRoot: $('archiveRoot').value.trim(),
+      reportDate: $('reportDate').value.trim(),
+      inputFolder: mode === 'folder' ? $('inputFolder').value.trim() : '',
+      files: mode === 'files' ? {
+        PRQ: $('filePRQ').value.trim() || null,
+        PO: $('filePO').value.trim() || null,
+        GRN: $('fileGRN').value.trim() || null,
+      } : {},
+      dryRun: $('dryRun').checked,
+    };
   },
-  /** Uploaded files as { slot: {name, data(base64)} } — the server stages them for one run. */
-  async files() {
-    const out = {};
-    for (const slot of ['PRQ', 'PO', 'GRN']) {
-      const f = $('file' + slot).files[0];
-      if (!f) continue;
-      const data = await new Promise((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result).split(',')[1] || '');
-        r.onerror = () => reject(new Error('Could not read ' + f.name));
-        r.readAsDataURL(f);
-      });
-      out[slot] = { name: f.name, data };
-    }
-    return out;
+  values() {
+    return {
+      archiveRoot: $('archiveRoot').value,
+      inputFolder: $('inputFolder').value,
+      filePRQ: $('filePRQ').value,
+      filePO: $('filePO').value,
+      fileGRN: $('fileGRN').value,
+      mode,
+    };
+  },
+  /**
+   * Saved on the server, not in localStorage. The window's origin carries a
+   * fresh port on every launch, so a localStorage entry never survived one —
+   * which is exactly why the archive root kept coming back empty.
+   *
+   * Kept in localStorage as well, purely so a reload within this same launch
+   * is instant and works even if the save request is still in flight.
+   */
+  save() {
+    const values = form.values();
+    try { localStorage.setItem(STATE_KEY, JSON.stringify(values)); } catch (e) { /* storage may be unavailable */ }
+    clearTimeout(form._saveTimer);
+    form._saveTimer = setTimeout(() => {
+      api('/api/settings', values).catch(() => { /* not remembering is not fatal */ });
+    }, 300);
+  },
+  /** Fill the form in from whatever was last saved. Server first — it is the copy that outlives a launch. */
+  apply(s) {
+    if (!s) return;
+    $('archiveRoot').value = s.archiveRoot || '';
+    $('inputFolder').value = s.inputFolder || '';
+    $('filePRQ').value = s.filePRQ || '';
+    $('filePO').value = s.filePO || '';
+    $('fileGRN').value = s.fileGRN || '';
+    if (s.mode) setMode(s.mode);
+  },
+  restore() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(STATE_KEY) || 'null'); } catch (e) { s = null; }
+    form.apply(s);
   },
 };
+
+/* ---------- source mode ---------- */
+let mode = 'folder';
+function setMode(next) {
+  mode = next;
+  $('tabFolder').setAttribute('aria-selected', String(next === 'folder'));
+  $('tabFiles').setAttribute('aria-selected', String(next === 'files'));
+  $('paneFolder').hidden = next !== 'folder';
+  $('paneFiles').hidden = next !== 'files';
+  form.save();
+}
+$('tabFolder').onclick = () => setMode('folder');
+$('tabFiles').onclick = () => setMode('files');
 
 /* ---------- results strip ---------- */
 const FIELDS = [
@@ -711,11 +788,15 @@ $('signOutBtn').onclick = async () => {
 
 /* Step 2: Run — pulls the three Amrita HIS reports through the session Sign In left waiting, for whichever archive root and report date are set on the Dashboard right now. */
 $('runPortalBtn').onclick = async () => {
+  const archiveRoot = $('archiveRoot').value.trim();
+  if (!archiveRoot) { setStatus('Choose the archive root folder first.', 'err'); return; }
+
   lastRunWasPortal = true;
   setBusy(true);
   setLoginStatus('Running Amrita HIS automation…', 'ok');
   renderPortalSummary(null);
   $('openMaster').disabled = true;
+  $('showMaster').disabled = true;
 
   try {
     // The definitive outcome — including a login-vs-automation failure
@@ -724,8 +805,8 @@ $('runPortalBtn').onclick = async () => {
     // carries an "error" field on a failed run, which api() treats as a
     // request failure, so it is not read here at all.
     await api('/api/run-portal', {
-      fromDate: $('reportDate').value.trim() || reportDateIso,
-      toDate: $('toDate').value.trim() || null,
+      archiveRoot,
+      reportDate: $('reportDate').value.trim() || reportDateIso,
     });
   } catch (err) {
     setBusy(false);
@@ -763,40 +844,43 @@ function connect() {
     renderResults(null, null);
     appendMeta('--- run started ' + new Date(d.at).toLocaleString() + (d.dryRun ? ' (preview only)' : '') + ' ---');
   });
-  es.addEventListener('date-start', (e) => {
-    const d = JSON.parse(e.data);
-    setLoginStatus('Running Amrita HIS automation — date ' + d.index + ' of ' + d.total + ' (' + d.date + ')…', 'ok');
-    appendMeta('=== ' + d.date + ' (' + d.index + ' of ' + d.total + ') ===');
-  });
-  es.addEventListener('batch-end', (e) => {
-    const b = JSON.parse(e.data);
-    setBusy(false);
-    lastRunWasPortal = false;
-    if (b.signedIn) showRunFields(activeUsername());
-    else showLoginFields();
-    const lines = b.results.map((x) => (x.ok ? '✓ ' : '✗ ') + x.date + (x.ok ? '' : ' — ' + x.error))
-      .concat(b.skipped.map((d) => '– ' + d + ' — not run'));
-    appendMeta('--- batch finished ---\\n' + lines.join('\\n'));
-    if (b.ok) {
-      setLoginStatus('✓ ' + b.results.length + ' date(s) completed'
-        + (b.signedIn ? ' — still signed in.' : '. Sign in again to run once more.'), 'ok');
-    } else {
-      const done = b.results.filter((x) => x.ok).length;
-      setLoginStatus('✗ ' + done + ' of ' + (b.results.length + b.skipped.length) + ' date(s) completed. '
-        + b.failures + (b.skipped.length ? ' Not run: ' + b.skipped.join(', ') + '.' : '')
-        + (b.screenshot ? ' — screenshot: ' + b.screenshot : ''), 'err', b.docLink, b.docLinkLabel);
-    }
-  });
   es.addEventListener('run-end', (e) => {
     const r = JSON.parse(e.data);
-    if (lastRunWasPortal) {
-      // One event per date; the batch-end event above reports the overall outcome.
-      finishRun(r);
-      if (r.ok) renderPortalSummary(r);
-      return;
-    }
     setBusy(false);
     finishRun(r);
+    if (lastRunWasPortal) {
+      // The Edge session stays signed in after a run unless the portal signed
+      // it out (or Edge was closed) — r.signedIn says which.
+      if (r.signedIn) showRunFields(activeUsername());
+      else showLoginFields();
+      lastRunWasPortal = false;
+      if (r.ok) {
+        setLoginStatus(r.signedIn
+          ? '✓ Automation completed — still signed in. Run again any time; close the Edge window to sign out.'
+          : '✓ Automation completed. Sign in again to run once more.', 'ok');
+        renderPortalSummary(r);
+      } else if (r.stage === 'login') {
+        setLoginStatus('✗ Amrita HIS session problem: ' + r.error, 'err', r.docLink, r.docLinkLabel);
+      } else if (r.stage === 'portal') {
+        // Stopped during the portal pull itself — the classification stage
+        // never ran, so there is nothing in the master file from this attempt.
+        setLoginStatus(
+          '✗ Stopped during the portal pull (classification was not run): ' + r.error
+          + (r.screenshot ? ' — screenshot: ' + r.screenshot : ''),
+          'err',
+          r.docLink,
+          r.docLinkLabel,
+        );
+      } else {
+        setLoginStatus(
+          '✗ Report automation failed: ' + r.error
+          + (r.screenshot ? ' — screenshot: ' + r.screenshot : ''),
+          'err',
+          r.docLink,
+          r.docLinkLabel,
+        );
+      }
+    }
   });
 }
 
@@ -810,6 +894,7 @@ function finishRun(r) {
   renderResults(r.fields, r.write && r.write.changes);
   lastMaster = r.layout.masterFile;
   $('openMaster').disabled = !r.write.written;
+  $('showMaster').disabled = !r.write.written;
 
   const written = r.write.written;
   const cols = Object.entries(r.fields).filter(([, v]) => v != null).map(([k]) => k).join('');
@@ -827,13 +912,14 @@ let resolveTimer = null;
 async function refreshPaths() {
   clearTimeout(resolveTimer);
   resolveTimer = setTimeout(async () => {
+    const root = $('archiveRoot').value.trim();
     const date = $('reportDate').value.trim();
-    if (!date) {
-      $('paths').textContent = 'Set a date to see where this run will read and write.';
+    if (!root || !date) {
+      $('paths').textContent = 'Choose a root and a date to see where this run will read and write.';
       return;
     }
     try {
-      const l = await api('/api/resolve', { reportDate: date });
+      const l = await api('/api/resolve', { archiveRoot: root, reportDate: date });
       if (!l.ok) { $('paths').textContent = l.error || 'Could not resolve those paths.'; return; }
       $('paths').innerHTML =
         '<b>month</b> ' + esc(l.monthFolder) + '<br>'
@@ -845,30 +931,62 @@ async function refreshPaths() {
   }, 180);
 }
 
-/* ---------- uploads / download ---------- */
-['PRQ', 'PO', 'GRN'].forEach((slot) => {
-  $('file' + slot).onchange = () => {
-    const f = $('file' + slot).files[0];
-    const m = f && /([0-9]{4})-([0-9]{2})-([0-9]{2})/.exec(f.name);
-    if (m && !$('reportDate').value) { $('reportDate').value = m[0]; refreshPaths(); }
+/* ---------- pickers ---------- */
+$('pickRoot').onclick = async () => {
+  try {
+    const r = await api('/api/pick-folder', { title: 'Select the archive root folder', initial: $('archiveRoot').value.trim() });
+    if (r.path) { $('archiveRoot').value = r.path; form.save(); refreshPaths(); }
+  } catch (err) { setStatus(err.message, 'err'); }
+};
+
+$('pickInput').onclick = async () => {
+  try {
+    const r = await api('/api/pick-folder', { title: "Select the day's inputs folder", initial: $('inputFolder').value.trim() });
+    if (!r.path) return;
+    $('inputFolder').value = r.path;
+    if (r.dateFromName && !$('reportDate').value) {
+      $('reportDate').value = r.dateFromName;
+      setStatus('Date ' + r.dateFromName + ' taken from the folder name.');
+    }
+    form.save();
+    refreshPaths();
+  } catch (err) { setStatus(err.message, 'err'); }
+};
+
+document.querySelectorAll('button[data-pick]').forEach((btn) => {
+  btn.onclick = async () => {
+    const slot = btn.dataset.pick;
+    try {
+      const r = await api('/api/pick-file', { title: 'Select the ' + slot + ' file' });
+      if (!r.path) return;
+      $('file' + slot).value = r.path;
+      if (r.dateFromName && !$('reportDate').value) $('reportDate').value = r.dateFromName;
+      form.save();
+      refreshPaths();
+    } catch (err) { setStatus(err.message, 'err'); }
   };
 });
 
-$('openMaster').onclick = () => {
-  if (lastMaster) location.href = '/api/download?token=' + TOKEN + '&path=' + encodeURIComponent(lastMaster);
+$('openMaster').onclick = async () => {
+  try { await api('/api/open', { path: lastMaster }); } catch (err) { setStatus(err.message, 'err'); }
+};
+$('showMaster').onclick = async () => {
+  try { await api('/api/reveal', { path: lastMaster }); } catch (err) { setStatus(err.message, 'err'); }
 };
 
 $('todayBtn').onclick = () => {
   // "Yesterday" — the previous CALENDAR day, computed once by the server
   // (core/paths.js getPreviousCalendarDay) and reused everywhere: this field,
   // the Amrita HIS date filters, and the inputs folder all agree with it.
-  if (reportDateIso) { $('reportDate').value = reportDateIso; $('toDate').value = ''; refreshPaths(); }
+  if (reportDateIso) { $('reportDate').value = reportDateIso; refreshPaths(); }
 };
 
 /* ---------- run ---------- */
 $('runBtn').onclick = async () => {
   const payload = form.read();
+  if (!payload.archiveRoot) { setStatus('Choose the archive root folder first.', 'err'); return; }
   if (!payload.reportDate) { setStatus('Set the report date first.', 'err'); return; }
+  form.save();
   lastRunWasPortal = false;
   renderPortalSummary(null);
   setLoginStatus('');
@@ -877,7 +995,6 @@ $('runBtn').onclick = async () => {
   try {
     // The result also arrives over the event stream; this catches the case
     // where the request itself is rejected before a run ever starts.
-    payload.files = await form.files();
     await api('/api/run', payload);
   } catch (err) {
     setBusy(false);
@@ -885,16 +1002,23 @@ $('runBtn').onclick = async () => {
   }
 };
 
-$('reportDate').oninput = refreshPaths;
+['archiveRoot', 'reportDate'].forEach((id) => { $(id).oninput = () => { form.save(); refreshPaths(); }; });
+['inputFolder', 'filePRQ', 'filePO', 'fileGRN'].forEach((id) => { $(id).oninput = form.save; });
 
 /* ---------- boot ---------- */
 (async () => {
+  form.restore();
   connect();
   loadSavedUsername();
   try {
     const s = await api('/api/status');
     reportDateIso = s.reportDate;
     $('todayDisplay').textContent = s.todayDisplay;
+
+    // The server's copy is the one that survives a restart, so it wins over
+    // whatever localStorage had — but only where it actually holds something,
+    // so a fresh install does not wipe the fields restore() just filled in.
+    if (s.settings && Object.keys(s.settings).length) form.apply({ ...form.values(), ...s.settings });
 
     if (!$('reportDate').value) { $('reportDate').value = s.reportDate; }
 

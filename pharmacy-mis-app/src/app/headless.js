@@ -1,17 +1,28 @@
 'use strict';
 
 /**
- * The command line: `node src/app/headless.js --root <folder> ...` (or `npm run cli -- ...`).
+ * The exe's headless half: `--cli`, `--help` and `--self-test`.
  *
- * Same pipeline as the web UI, no browser. This is what a scheduled task drives
- * for the daily portal pull; every run is also appended to the application log.
+ * Same binary, same pipeline, no window. This is what a scheduled task will
+ * drive once the portal pull is in place, and what the release check runs
+ * against the built exe.
+ *
+ * A NOTE ON OUTPUT. The shipped exe is a Windows GUI-subsystem binary — that
+ * is what stops a console flashing up when the customer double-clicks it. The
+ * cost is that when it is started from an interactive Command Prompt, Windows
+ * gives it no console to write to, so printed output goes nowhere. Writing to
+ * a *pipe* works normally, so anything that spawns the exe (the release check,
+ * Task Scheduler with output redirected) still captures everything. For a
+ * human at a prompt, `--out <file>` writes the same result as JSON to disk,
+ * and every run is appended to the application log regardless.
  */
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { runDailyReport } = require('../pipeline');
-const { runWithPortalPullRange } = require('../portalRun');
-const { log } = require('../core/appdata');
+const { runWithPortalPull } = require('../portalRun');
+const { log, logFile, errorLogFile } = require('../core/appdata');
 const { getPreviousCalendarDay } = require('../core/paths');
 
 const USAGE = `
@@ -19,9 +30,6 @@ Pharmacy MIS — daily report mapping (command line)
 
   --root <folder>     archive root, the folder that holds Pharmacy-MIS/  (required)
   --date <date>       report date, YYYY-MM-DD or DD-MM-YYYY
-  --from <date>       first date of a range (portal pull; same as --date)
-  --to <date>         last date of a range (portal pull); every day in
-                      --from..--to runs, signing in once
                       (defaults to yesterday — the previous calendar day)
   --inputs <folder>   dated inputs folder to scan
   --prq <file>        PRQ Details file      -> columns C, D
@@ -40,13 +48,18 @@ Pharmacy MIS — daily report mapping (command line)
   --quiet             only print warnings and errors
   --json              print the full result as JSON instead of a log
   --out <file>        also write the result as JSON to <file>
+  --self-test         run the built-in diagnostic and exit
   -h, --help          this text
 
 Files are identified by their column layout, so --prq/--po/--grn are a
 convenience: a file passed in the wrong slot is still placed correctly.
+
+This exe has no console when started by double-click or from an interactive
+Command Prompt. Use --out <file> to capture the result, or read the log at:
+  %LOCALAPPDATA%\\PharmacyMIS\\logs\\
 `;
 
-const FLAGS = new Set(['--dry-run', '--quiet', '--json', '-h', '--help']);
+const FLAGS = new Set(['--dry-run', '--quiet', '--json', '-h', '--help', '--self-test', '--cli']);
 
 function parseArgs(argv) {
   const out = { files: {} };
@@ -58,6 +71,8 @@ function parseArgs(argv) {
       if (arg === '--dry-run') out.dryRun = true;
       else if (arg === '--quiet') out.quiet = true;
       else if (arg === '--json') out.json = true;
+      else if (arg === '--self-test') out.selfTest = true;
+      else if (arg === '--cli') { /* mode switch only */ }
       else out.help = true;
       continue;
     }
@@ -69,14 +84,13 @@ function parseArgs(argv) {
     switch (arg) {
       case '--root': out.archiveRoot = path.resolve(value); break;
       case '--date': out.reportDate = value; break;
-      case '--from': out.fromDate = value; break;
-      case '--to': out.toDate = value; break;
       case '--inputs': out.inputFolder = path.resolve(value); break;
       case '--prq': out.files.PRQ = path.resolve(value); break;
       case '--po': out.files.PO = path.resolve(value); break;
       case '--grn': out.files.GRN = path.resolve(value); break;
       case '--username': out.username = value; break;
       case '--out': out.outFile = path.resolve(value); break;
+      case '--expect': out.expect = value; break;
       default: throw new Error('Unknown option ' + arg);
     }
   }
@@ -124,29 +138,11 @@ async function runCli(opts) {
         + 'The password is never accepted as a command-line argument.',
       );
     }
-    const fromDate = opts.fromDate || opts.reportDate || getPreviousCalendarDay().iso;
-    const range = await runWithPortalPullRange(
-      { archiveRoot: opts.archiveRoot, fromDate, toDate: opts.toDate, credentials: { username: opts.username, password }, dryRun: !!opts.dryRun },
+    const reportDate = opts.reportDate || getPreviousCalendarDay().iso;
+    result = await runWithPortalPull(
+      { archiveRoot: opts.archiveRoot, reportDate, credentials: { username: opts.username, password }, dryRun: !!opts.dryRun },
       sink,
     );
-    if (range.results.length === 1 && !range.skipped.length) {
-      [result] = range.results; // a single day reports exactly as it always did
-    } else {
-      const summary = range.results.map((r) => ({ date: r.date, ok: !!r.ok, error: r.ok ? undefined : r.error }));
-      const failed = summary.filter((r) => !r.ok);
-      result = {
-        ok: range.ok,
-        error: failed.map((r) => `${r.date}: ${r.error}`).join('\n') + (range.skipped.length ? `\nNot run: ${range.skipped.join(', ')}` : ''),
-        dates: summary,
-        skipped: range.skipped,
-        log: range.results.flatMap((r) => r.log || []),
-      };
-      if (!opts.json) {
-        say('');
-        summary.forEach((r) => say((r.ok ? 'OK    ' : 'FAIL  ') + r.date + (r.ok ? '' : ' — ' + r.error)));
-        range.skipped.forEach((d) => say('SKIP  ' + d));
-      }
-    }
   } else {
     result = await runDailyReport(opts, sink);
   }
@@ -170,14 +166,15 @@ async function runCli(opts) {
         .map((e) => e.level.toUpperCase().padEnd(5) + ' ' + '  '.repeat(e.indent || 0) + e.message)
         .join('\n'),
     );
-    say('details written to ' + log.file());
+    const where = errorLogFile();
+    if (where) say('details written to ' + where);
   }
 
   writeOut(opts.outFile, { ...result, log: undefined });
 
   if (opts.json) {
     say(JSON.stringify({ ...result, log: undefined }, null, 2));
-  } else if (result.ok && result.fields) {
+  } else if (result.ok) {
     say('');
     say(Object.entries(result.fields).map(([k, v]) => k + '=' + (v == null ? '-' : v)).join('  '));
     say((result.write.written ? 'saved: ' : 'preview: ') + result.layout.masterFile);
@@ -189,11 +186,212 @@ async function runCli(opts) {
 }
 
 /* ------------------------------------------------------------------ *
+ * --self-test
+ * ------------------------------------------------------------------ */
+
+/**
+ * The diagnostic that runs INSIDE the shipped binary, so what it proves is
+ * true of the exe the customer has rather than of the source tree. It checks
+ * the resources that must be embedded, that the app has somewhere to write,
+ * that the local server really serves the page, and — when given inputs —
+ * the whole mapping pipeline including the update / append / month-rollover
+ * paths that the master workbook depends on.
+ */
+async function runSelfTest(opts) {
+  const checks = [];
+  // The Logger prints to the console when it has no sink; the self-test wants
+  // its own PASS/FAIL lines and nothing else, so give it one that discards.
+  const quiet = () => {};
+  const record = (name, ok, note) => {
+    checks.push({ name, ok: !!ok, note: note || '' });
+    say((ok ? 'PASS  ' : 'FAIL  ') + name + (note ? '  — ' + note : ''));
+  };
+
+  say('Pharmacy MIS — built-in self test');
+  say('exe:  ' + process.execPath);
+  say('cwd:  ' + process.cwd());
+  say('log:  ' + logFile());
+  say('errors: ' + (errorLogFile() || '(no Documents folder found)'));
+  say('');
+
+  // --- embedded resources -------------------------------------------------
+  try {
+    const ExcelJS = require('exceljs');
+    const { templateBuffer } = require('../excel/template');
+    const buf = templateBuffer();
+    record('embedded report template decodes', buf.length > 10000, buf.length + ' bytes');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf);
+    const ws = wb.getWorksheet('Daily Report');
+    record('template has the "Daily Report" sheet', !!ws);
+    record('template title band intact', ws && ws.getCell('A1').value === 'Daily Purchase & Inventory MIS Report');
+    record('template headers intact', ws && ws.getCell('C2').value === 'Total no of PRQ');
+    record('template column widths intact', ws && Math.round(ws.getColumn(3).width) === 15);
+    record('template keeps the Monthly Summary sheet', !!wb.getWorksheet('Monthly Summary'));
+  } catch (err) {
+    record('embedded report template usable', false, err.message);
+  }
+
+  try {
+    const { page } = require('../ui/page');
+    const html = page('selftest-token');
+    record('embedded UI page present', html.length > 5000 && html.includes('Pharmacy MIS'));
+    record('UI page has no external resources', !/https?:\/\//i.test(html));
+
+    // page.js writes the client-side script as text INSIDE its own outer
+    // template literal — a raw \n (rather than \\n) in that text is consumed
+    // by the OUTER literal's own escaping and lands in the served page as an
+    // actual newline character inside what the browser sees as a single- or
+    // double-quoted string, which is a syntax error the browser hits at
+    // parse time. Nothing above catches that: `node -c` on this file only
+    // validates page.js itself, never the JS text it serves. Once this broke
+    // silently — dates, the log and the connection badge all stayed blank —
+    // so the client script is pulled out and syntax-checked on its own here.
+    const scriptMatch = /<script>([\s\S]*)<\/script>/.exec(html);
+    record('client <script> block present', !!scriptMatch);
+    if (scriptMatch) {
+      try {
+        // eslint-disable-next-line no-new, no-new-func
+        new Function(scriptMatch[1]);
+        record('client-side script has valid syntax', true);
+      } catch (err) {
+        record('client-side script has valid syntax', false, err.message);
+      }
+    }
+  } catch (err) {
+    record('embedded UI page present', false, err.message);
+  }
+
+  // --- optional scraper must never be load-bearing -------------------------
+  try {
+    const scraper = require('../scraper');
+    record('optional portal scraper loads without crashing', typeof scraper.isAvailable === 'function',
+      'available: ' + scraper.isAvailable());
+  } catch (err) {
+    record('optional portal scraper loads without crashing', false, err.message);
+  }
+
+  // --- writable locations --------------------------------------------------
+  try {
+    const probe = logFile();
+    log.info('self-test write probe');
+    record('application log directory is writable', fs.existsSync(probe), path.dirname(probe));
+  } catch (err) {
+    record('application log directory is writable', false, err.message);
+  }
+
+  // --- the local server ----------------------------------------------------
+  await withServer(async (url, token) => {
+    const pageRes = await httpGet(url);
+    record('local server serves the application page', pageRes.status === 200 && /<!doctype html>/i.test(pageRes.body));
+    const status = await httpGet(url + 'api/status?token=' + token);
+    record('local server answers /api/status', status.status === 200 && JSON.parse(status.body).ok === true);
+    const forbidden = await httpGet(url + 'api/status?token=wrong');
+    record('local server rejects a bad token', forbidden.status === 403);
+  }, record);
+
+  // --- the full pipeline ---------------------------------------------------
+  if (opts.inputFolder) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmis-selftest-'));
+    const base = { archiveRoot: root, inputFolder: opts.inputFolder };
+
+    const first = await runDailyReport({ ...base, reportDate: '2026-08-08' }, quiet);
+    record('pipeline run against the given inputs succeeds', first.ok, first.error || '');
+    record('master workbook created for a new month', first.ok && first.write.created === true);
+    record('first date appended at row 3', first.ok && first.write.row === 3 && first.write.mode === 'appended');
+    record('master workbook exists on disk', first.ok && fs.existsSync(first.layout.masterFile));
+
+    if (opts.expect) {
+      for (const pair of String(opts.expect).split(',')) {
+        const [field, want] = pair.split('=').map((s) => s.trim());
+        const got = first.ok ? first.fields[field] : undefined;
+        record('column ' + field + ' = ' + want, String(got) === String(Number(want)), 'got ' + got);
+      }
+    }
+
+    const again = await runDailyReport({ ...base, reportDate: '2026-08-08' }, quiet);
+    record('re-running the same date updates in place', again.ok && again.write.mode === 'updated' && again.write.totalRows === 1);
+
+    const second = await runDailyReport({ ...base, reportDate: '2026-08-09' }, quiet);
+    record('a second date appends', second.ok && second.write.mode === 'appended' && second.write.totalRows === 2);
+
+    const rollover = await runDailyReport({ ...base, reportDate: '2026-09-01' }, quiet);
+    record('a new month starts a fresh master at row 3',
+      rollover.ok && rollover.write.created === true && rollover.write.row === 3);
+    record('new month gets its own file',
+      rollover.ok && path.basename(rollover.layout.masterFile) === 'Master_Report_September_2026.xlsx');
+
+    const badFolder = await runDailyReport({ ...base, inputFolder: path.join(root, 'nope'), reportDate: '2026-08-08' }, quiet);
+    record('a missing inputs folder is reported, not crashed', badFolder.ok === false && /does not exist/i.test(badFolder.error));
+
+    // A folder whose name carries no date, so nothing can supply one.
+    const undated = path.join(root, 'loose-files');
+    fs.mkdirSync(undated, { recursive: true });
+    for (const f of fs.readdirSync(opts.inputFolder)) {
+      fs.copyFileSync(path.join(opts.inputFolder, f), path.join(undated, f));
+    }
+    const noDate = await runDailyReport({ archiveRoot: root, inputFolder: undated }, quiet);
+    record('a run with no resolvable date is refused clearly', noDate.ok === false && /report date/i.test(noDate.error));
+
+    const emptyDir = path.join(root, 'empty');
+    fs.mkdirSync(emptyDir, { recursive: true });
+    const noFiles = await runDailyReport({ archiveRoot: root, inputFolder: emptyDir, reportDate: '2026-08-08' }, quiet);
+    record('an empty inputs folder is reported clearly', noFiles.ok === false && /no \.csv or \.xlsx/i.test(noFiles.error));
+
+    fs.rmSync(root, { recursive: true, force: true });
+  } else {
+    say('');
+    say('(no --inputs given: the mapping pipeline checks were skipped)');
+  }
+
+  const failed = checks.filter((c) => !c.ok);
+  say('');
+  say('='.repeat(58));
+  say((checks.length - failed.length) + ' passed, ' + failed.length + ' failed');
+  say('='.repeat(58));
+
+  writeOut(opts.outFile, { ok: failed.length === 0, checks, exe: process.execPath });
+  log.info('self-test: ' + (checks.length - failed.length) + ' passed, ' + failed.length + ' failed');
+  return failed.length ? 1 : 0;
+}
+
+/** Start the real server on a free port, hand its URL to fn, then close it. */
+async function withServer(fn, record) {
+  let server = null;
+  try {
+    const { createServer, TOKEN } = require('../ui/server');
+    const created = createServer();
+    server = created.server;
+    const url = await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve('http://127.0.0.1:' + server.address().port + '/'));
+    });
+    record('local server starts on a free loopback port', true, url);
+    await fn(url, TOKEN);
+  } catch (err) {
+    record('local server starts on a free loopback port', false, err.message);
+  } finally {
+    if (server) try { server.close(); } catch { /* already closed */ }
+  }
+}
+
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    require('http').get(url, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    }).on('error', reject);
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * Entry
  * ------------------------------------------------------------------ */
 
-async function run(argv) {
-  const exit = (code) => process.exit(code);
+async function run(argv, app) {
+  const exit = (code) => (app ? app.exit(code) : process.exit(code));
 
   let opts;
   try {
@@ -207,6 +405,8 @@ async function run(argv) {
   if (opts.help) { say(USAGE); return exit(0); }
 
   try {
+    if (opts.selfTest) return exit(await runSelfTest(opts));
+
     if (!opts.archiveRoot) {
       say('--root is required.');
       say(USAGE);
@@ -227,5 +427,3 @@ async function run(argv) {
 }
 
 module.exports = { run, parseArgs, USAGE };
-
-if (require.main === module) run(process.argv.slice(2));

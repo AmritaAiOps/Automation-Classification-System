@@ -1,32 +1,9 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
-/**
- * Collapse a header cell to a comparable key: newlines and runs of whitespace
- * become single spaces, periods are dropped, case is folded. This is what lets
- * the same field be found across files that spell it differently — the PO
- * sheet's "PO. No." and the GRN export's "PO\nNo." both key to "po no".
- */
-function headerKey(cell) {
-  return String(cell == null ? '' : cell)
-    .replace(/\s+/g, ' ')
-    .replace(/\./g, '')
-    .trim()
-    .toLowerCase();
-}
-
-/**
- * CSV rows as plain strings, via exceljs (RFC-4180, quoted newlines/commas).
- * map: identity keeps "00123" and " 3,629.00 " as text — the mapping rules do
- * their own number handling.
- */
-async function readCsvRows(filePath) {
-  const ws = await new ExcelJS.Workbook().csv.readFile(filePath, { parserOptions: { ignoreEmpty: false }, map: (v) => v });
-  const rows = [];
-  ws.eachRow({ includeEmpty: true }, (r) => rows.push(r.values.slice(1).map((v) => (v == null ? '' : String(v)))));
-  return rows;
-}
+const { parseCsv, headerKey } = require('./csv');
 
 /**
  * A "sheet" is the common shape every source file is reduced to before any
@@ -115,7 +92,8 @@ function buildSheet(rows, extra = {}) {
 async function loadSheet(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.csv' || ext === '.txt') {
-    const rows = await readCsvRows(filePath);
+    const text = fs.readFileSync(filePath, 'utf8');
+    const rows = parseCsv(text);
     return buildSheet(rows, { source: filePath, format: 'csv' });
   }
   if (ext === '.xlsx' || ext === '.xlsm') {

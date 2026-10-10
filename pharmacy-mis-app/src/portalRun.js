@@ -1,88 +1,47 @@
 'use strict';
 
-const { resolveLayout, enumerateDates } = require('./core/paths');
+const { resolveLayout } = require('./core/paths');
 const { runDailyReport } = require('./pipeline');
 
 /**
- * Pull one date's three reports through an already-signed-in session, then map
- * them into the master. Always resolves with a result object; a failure is
- * { ok: false, error, stage: 'login' | 'portal' | 'automation', screenshot, docLink }.
- * A pull that stopped partway never reaches classification — it must not run
- * against whatever was already sitting in the folder from a previous day.
- */
-async function runOneDate(session, archiveRoot, date, sink, { dryRun = false } = {}) {
-  // eslint-disable-next-line global-require
-  const scraper = require('./scraper');
-  const layout = resolveLayout(archiveRoot, date);
-  let result;
-  try {
-    let pull;
-    try {
-      pull = await scraper.runReports(session, { layout }, makeLogger(sink));
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      throw Object.assign(new Error(message), {
-        stage: LOGIN_FAILURE.test(message) ? 'login' : 'portal',
-        screenshot: err.screenshot || null,
-        docLink: err.docLink || null,
-        docLinkLabel: err.docLinkLabel || null,
-      });
-    }
-    result = await runDailyReport({ archiveRoot, reportDate: layout.date.iso, dryRun: !!dryRun }, sink);
-    if (result.ok) result.portalFiles = pull.files;
-    else result.stage = 'automation';
-  } catch (err) {
-    const message = err && err.message ? err.message : String(err);
-    result = {
-      ok: false,
-      error: message,
-      stage: err.stage || (LOGIN_FAILURE.test(message) ? 'login' : 'automation'),
-      screenshot: err.screenshot || null,
-      docLink: err.docLink || null,
-      docLinkLabel: err.docLinkLabel || null,
-      log: [],
-    };
-  }
-  result.date = layout.date.iso;
-  return result;
-}
-
-/**
- * The same pull-then-map flow for every date in [fromDate, toDate], signing in
- * ONCE and reusing the session. Dates run one after another (they all write
- * the same monthly master). A failed date is recorded and the loop carries on,
- * except for a sign-in failure or a dead browser, which ends it.
+ * "Sign In & Run": pull the day's reports from Amrita HIS with Puppeteer
+ * (src/scraper/index.js), then hand off to the existing mapping pipeline
+ * exactly as a manually-picked inputs folder would — the scraper leaves the
+ * CSVs in layout.dayInputsDir, which is the same folder the pipeline scans by
+ * default when no inputFolder is given.
  *
- * Returns { ok, results: [one runDailyReport-shaped result per attempted date],
- * skipped: [dates never attempted] }.
+ * Shared by the GUI (src/ui/server.js) and the headless/CLI runner
+ * (src/app/headless.js) so there is exactly one place that wires the portal
+ * pull to the pipeline.
+ *
+ * `credentials.password` lives only in this call's stack frame: it is passed
+ * straight through to the scraper and never assigned anywhere that would
+ * outlive this function, never logged, and never part of the returned
+ * result.
  */
-async function runWithPortalPullRange({ archiveRoot, fromDate, toDate, credentials, dryRun }, sink) {
+async function runWithPortalPull({ archiveRoot, reportDate, credentials, dryRun }, sink) {
   // eslint-disable-next-line global-require
   const scraper = require('./scraper');
-  const dates = enumerateDates(fromDate, toDate || null);
-  const out = sink || (() => {});
-  const results = [];
+  const entries = [];
+  const trackedSink = (entry) => { entries.push(entry); if (sink) sink(entry); };
 
-  let session;
+  let pull;
   try {
-    session = await scraper.startSession(credentials, makeLogger(out));
+    const layout = resolveLayout(archiveRoot, reportDate);
+    pull = await scraper.fetchDailyInputs({
+      layout,
+      credentials,
+      log: { step: (m) => logStep(trackedSink, m), ...loggerFns(trackedSink) },
+    });
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
-    return { ok: false, results: [{ ok: false, date: dates[0], error: message, stage: 'login', log: [] }], skipped: dates.slice(1) };
+    return { ok: false, error: message, stage: LOGIN_FAILURE.test(message) ? 'login' : 'automation', log: entries };
   }
 
-  try {
-    for (const date of dates) {
-      out({ ts: new Date().toISOString(), level: 'step', indent: 0, message: `Date ${results.length + 1} of ${dates.length}: ${date}`, detail: null });
-      const result = await runOneDate(session, archiveRoot, date, out, { dryRun });
-      results.push(result);
-      if (result.stage === 'login' || !session.browser.connected) break;
-    }
-  } finally {
-    await scraper.closeSession(session);
-  }
-
-  return { ok: results.every((r) => r.ok) && results.length === dates.length, results, skipped: dates.slice(results.length) };
+  const result = await runDailyReport({ archiveRoot, reportDate, dryRun: !!dryRun }, sink || (() => {}));
+  if (result.ok) result.portalFiles = pull.files;
+  else result.stage = 'automation';
+  return result;
 }
 
 /**
@@ -119,4 +78,4 @@ function makeLogger(sink) {
   return { step: (m) => logStep(sink, m), ...loggerFns(sink) };
 }
 
-module.exports = { runWithPortalPullRange, runOneDate, makeLogger, LOGIN_FAILURE };
+module.exports = { runWithPortalPull, makeLogger, LOGIN_FAILURE };

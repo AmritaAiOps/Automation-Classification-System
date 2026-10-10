@@ -17,7 +17,7 @@ const REFERENCE = path.join(__dirname, '..', '..', 'reference');
 const rules = require('../src/mapping/rules');
 const { loadSheet } = require('../src/core/sheet');
 const { identifySheet } = require('../src/core/detect');
-const { resolveLayout, parseReportDate, enumerateDates, dateFromName } = require('../src/core/paths');
+const { resolveLayout, parseReportDate, dateFromName } = require('../src/core/paths');
 const { runDailyReport } = require('../src/pipeline');
 const { cellDateIso } = require('../src/excel/master');
 
@@ -74,17 +74,6 @@ async function main() {
   let threw = false;
   try { parseReportDate('2026-02-30'); } catch { threw = true; }
   truthy('impossible date rejected', threw);
-
-  check('range: blank To is a single day', enumerateDates('2026-08-08', null), ['2026-08-08']);
-  check('range: crosses a month boundary', enumerateDates('2026-08-30', '2026-09-02'),
-    ['2026-08-30', '2026-08-31', '2026-09-01', '2026-09-02']);
-  check('range: leap day', enumerateDates('2028-02-28', '2028-03-01'), ['2028-02-28', '2028-02-29', '2028-03-01']);
-  threw = false;
-  try { enumerateDates('2026-08-10', '2026-08-08'); } catch { threw = true; }
-  truthy('range: reversed rejected', threw);
-  threw = false;
-  try { enumerateDates('2026-01-01', '2026-12-31'); } catch { threw = true; }
-  truthy('range: over-long rejected', threw);
 
   section('Format identification (content, not filename)');
   const expectKind = {
@@ -271,17 +260,6 @@ async function main() {
     } catch (err) {
       truthy('client-side script has valid syntax', false, err.message);
     }
-  }
-
-  section('Download guard (web)');
-  {
-    process.env.ARCHIVE_ROOT = path.join(os.tmpdir(), 'pharmis-root');
-    const { insideArchive } = require('../src/ui/server');
-    const root = process.env.ARCHIVE_ROOT;
-    truthy('file inside archive is allowed', insideArchive(path.join(root, 'a', 'b.xlsx')));
-    truthy('../ escape is refused', !insideArchive(path.join(root, '..', 'x.txt')));
-    truthy('absolute path outside is refused', !insideArchive(path.join(os.tmpdir(), 'win.ini')));
-    truthy('the root itself is refused', !insideArchive(root));
   }
 
   console.log(`\n${'='.repeat(56)}`);
