@@ -2,7 +2,7 @@
 
 /**
  * Bakes the reference workbook ("Daily Report for coding.xlsx") into
- * src/excel/template.js as base64, so the packaged exe carries the master
+ * src/excel/template.js as base64, so the app carries the master
  * report's exact formatting — title band, header band, column widths, borders,
  * number formats — with no reference folder to ship alongside it.
  *

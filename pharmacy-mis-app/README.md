@@ -4,26 +4,12 @@ Sudhamayi Enterprise Pvt. Ltd. — Pharmacy Purchase & Inventory Automation
 
 Reads the three daily source reports, applies the column rules from
 `Daily_Report_Field_Mapping.docx`, and appends one row per date to the month's
-master report. The window shows every stage as it happens — which file was
+master report. The web page shows every stage as it happens: which file was
 identified as what, which rows each filter dropped and why, and exactly which
 cells changed in the master.
 
-## What the customer receives
-
-One file, 90 MB:
-
-```
-Pharmacy-MIS.exe
-```
-
-Optionally `Pharmacy-MIS.exe.sha256` beside it, to confirm the copy arrived
-intact. That file is **not** needed to run the application.
-
-Nothing else is required on their machine — no Node.js, no npm, no Python, no
-`node_modules`, no source, no `reference/` folder, no template workbook, no
-browser, no WebView2, no Visual C++ redistributable, and no internet
-connection. The application carries its own browser engine, its own JavaScript
-runtime and its own copy of the report template inside the exe.
+It runs as a web app on one PC or server (Node.js 20+, Microsoft Edge for the
+portal pull). Staff open it in a browser.
 
 ## Project status
 
@@ -76,70 +62,61 @@ code that guards against it:
 
 `tools/check-alert-capture.js` (`npm run check-alert-capture`) is a regression
 check for the first of these against a local page, not the real portal, so it
-runs without portal access. `tools/inspect-purchase-form.js` and
-`tools/probe-purchase-filters.js` are the scripts that found the second and
-third — kept for the next time this form looks like it is lying.
+runs without portal access.
 
 ## Running it
 
-Double-click **`Pharmacy-MIS.exe`**.
+Set these, then start the server (PowerShell):
 
-The first launch unpacks the application into `%LOCALAPPDATA%\PharmacyMIS\` and
-takes a few seconds. Every launch after that is immediate.
+```powershell
+$env:APP_PASSWORD = "choose-a-password"          # required
+$env:ARCHIVE_ROOT = "D:\Pharmacy-MIS-Archive"     # required; a folder on the server
+$env:APP_USER = "admin"                          # optional, default admin
+$env:PORT = "8080"                               # optional, default 8080
+npm install
+npm run web
+```
 
-The window opens on the Amrita HIS sign-in screen, with **Reports to process**
-at the top of that card — a date field, pre-filled with yesterday but editable
-to any date. It is the one date control on the whole page: both ways on from
-here read it, so setting it to, say, `2026-08-08` and running either path
-fetches or maps that day's reports, not just yesterday's.
+- Browsers sign in with HTTP Basic Auth (APP_USER / APP_PASSWORD). That is only safe
+  over HTTPS, so for access from outside the LAN put it behind a Cloudflare Tunnel
+  (`cloudflared tunnel --url http://localhost:8080`).
+- Same network: open `http://<server-ip>:8080` and allow the port in Windows Firewall.
+- Always on: a Task Scheduler task "At startup" running `node src/web.js` with the variables above.
+- The portal pull runs Edge headless. If the portal rejects that, set
+  `PHARMACY_MIS_HEADFUL=1` to get a visible window on the server.
+- One run at a time and one portal sign-in, shared by everyone using the site.
 
-- **Sign In**, then **Run** — Puppeteer signs in, pulls the reports for that date
-  and maps them in one go.
-- **Continue without signing in — manual run** — goes straight to the dashboard for
-  reports already on disk, pulled by hand or exported by someone else. No credentials
-  are needed, nothing is fetched, and the master row written is exactly the same. The
-  sign-in card stays in the sidebar, so a portal pull is still one sign-in away in the
-  same session.
+The page opens on the Amrita HIS sign-in screen, with **Reports to process** at the top
+of that card: a date field, pre-filled with yesterday but editable to any date. It is
+the one date control on the page, and both ways on from here read it.
 
-Either way the dashboard below it is the same three steps:
+- **Sign In**, then **Run**: Puppeteer signs in, pulls the reports for that date and
+  maps them in one go.
+- **Continue without signing in (manual run)**: for reports already exported by hand.
+  Upload the three files (PRQ, PO, GRN); nothing is fetched, and the master row written
+  is exactly the same.
 
-1. **Archive root** — the folder that holds (or will hold) `Pharmacy-MIS/`
-2. **Source files** — either a dated inputs folder, or the three files picked
-   individually. Both work, and can be mixed.
-3. **Run daily report** — tick *Preview only* to see every figure and every
-   intended cell change without writing anything.
+Either way, the results are written under `ARCHIVE_ROOT` on the server, and the
+**Download master** button fetches the month's workbook. Tick *Preview only* to see
+every figure and every intended cell change without writing anything.
 
-The **Reports to process** date always wins over whatever the source files or
-folder name look like they are for — filing a day's data under a different
-date is sometimes deliberate — but a mismatch is not silent: the log names
-both dates and says which one the run used, so a leftover date from a
-previous session is caught rather than quietly writing a real day's figures
-into the wrong row. If no date is set at all, it falls back to reading one
-from the inputs folder name or the filenames themselves.
+The **Reports to process** date always wins over whatever the uploaded file names look
+like they are for, but a mismatch is not silent: the log names both dates and says
+which one the run used. If no date is set at all, it falls back to a date in the file names.
 
-### Headless
+### Command line
 
-The same exe runs without a window, for Task Scheduler once the portal pull is
-in place:
+The same pipeline without a browser, for Task Scheduler:
 
 ```
-Pharmacy-MIS.exe --cli --root C:\Pharmacy-Archive --inputs C:\...\inputs\2026-08-08
-Pharmacy-MIS.exe --cli --root C:\Pharmacy-Archive --date 2026-08-08 --dry-run
-Pharmacy-MIS.exe --cli --self-test --inputs <folder> --out result.json
-Pharmacy-MIS.exe --cli --help
+npm run cli -- --root D:\Pharmacy-MIS-Archive --inputs D:\...\inputs\2026-08-08
+npm run cli -- --root D:\Pharmacy-MIS-Archive --date 2026-08-08 --dry-run
+npm run cli -- --root D:\Pharmacy-MIS-Archive --username <user>   # password in PHARMACY_MIS_PASSWORD
+npm run cli -- --help
 ```
 
 It exits non-zero on failure, so a scheduled task reports a problem rather than
-silently succeeding.
-
-**One thing to know about output.** The exe is a Windows *GUI-subsystem* binary
-— that is what stops a black console window appearing when the customer
-double-clicks it. Windows gives such a binary no console of its own, so when it
-is started from an interactive Command Prompt its printed output goes nowhere.
-Writing to a *pipe* works normally, so anything that spawns it (Task Scheduler
-with output redirected, `npm run release-test`) captures everything. For a human
-at a prompt, add `--out <file>` to get the result as JSON, and note that every
-run is appended to the application log either way.
+silently succeeding. Every run is appended to the application log either way.
 
 ## The column rules
 
@@ -225,10 +202,8 @@ Consequences worth knowing, all covered by `npm run release-test`:
                 └── Master_Report_August_2026.xlsx
 ```
 
-The archive root is chosen by the customer and can be anywhere they can write.
-Missing folders are created automatically. Nothing is ever written beside the
-exe, so it is safe to keep it in `Program Files`, on a network share or on a
-USB stick.
+The archive root is the server's `ARCHIVE_ROOT` folder. Missing folders are created
+automatically.
 
 - One row per date, appended in order, `S.No` renumbered on every save.
 - Re-running a date **updates that row in place** rather than adding a duplicate
@@ -244,76 +219,27 @@ USB stick.
 
 ```
 %LOCALAPPDATA%\PharmacyMIS\
-├── logs\
-│   └── pharmacy-mis-YYYY-MM-DD.log     one per day, pruned after 30 days
-└── runtime\
-    └── 1.0.0-<payload hash>\           the unpacked application
+├── logs\pharmacy-mis-YYYY-MM-DD.log          one per day, pruned after 30 days
+├── screenshots\failure_<step>_<time>.png     portal failures, pruned after 30 days
+└── credentials.json                            the remembered username, never a password
 ```
 
-Nothing is written beside the exe, because the exe may be somewhere the
-customer cannot write.
-
-A folder named `1.0.0-<payload hash>-2` beside that one is normal, and means the
-launcher could not replace the original — antivirus holding the new files open,
-or a copy of the application that was still running — so it used the next name
-rather than refusing to start. It costs the disk space of one more copy, and the
-next new version clears both away. `npm run check-unpack-recovery` is what keeps
-that path working.
-
-### When something goes wrong
-
-Every failure is recorded **twice**: once in the technical log above, and once
-in a plain-language copy the customer can actually find.
-
-```
-Documents\Pharmacy MIS\Pharmacy MIS - Error Log.txt
-```
-
-`%LOCALAPPDATA%` is the correct place for an application's logs and the wrong
-place to send a pharmacy user looking — the folder is hidden, the path is long,
-and "AppData" means nothing to them. The Documents copy is what a support call
-should ask for: it is one file, it opens in Notepad, and it can be attached to
-an email without anyone being talked through Explorer.
-
-Each entry carries the time, what was being attempted, what went wrong in
-words, the settings in use, the full stage-by-stage log of the run, and the
-path to the technical log. It ends with a line telling the customer to send the
-file to their IT contact.
-
-The folder is created on the first failure and never before, so a customer who
-never has a problem never gets a folder in their Documents. The file keeps one
-previous generation and rolls over at 1 MB, so a repeatedly failing run cannot
-fill the disk. Documents is resolved through Windows rather than assumed to be
-under the user profile, because it is commonly redirected to OneDrive or a
-network share.
-
-Everything that can go wrong writes there:
-
-| Failure | Written by |
-| --- | --- |
-| the exe cannot unpack or start the application | the launcher, before any of the app runs |
-| the application window fails to open | `src/app/main.js` |
-| an unhandled error at any point | `src/app/main.js` |
-| **a report run fails** — much the commonest case | `src/ui/server.js` |
-| a scheduled or command-line run fails | `src/app/headless.js` |
-
-On top of the file, a startup failure also shows a dialog naming the stage that
-failed, what to try, and where the error file is — with **Copy error details**
-and **Show me the error file** buttons — rather than disappearing silently.
-`npm run release-test` provokes a real failed run and checks the file appears,
-says what went wrong, and tells the customer what to do with it.
+Failures, including the stage-by-stage log of a failed run, are written to the day's
+log file. Run results and the master workbooks live under `ARCHIVE_ROOT`.
 
 ## Layout
 
 ```
 src/
-  app/
-    main.js            Electron main process: window, lifecycle, failure dialog
-    headless.js        --cli / --help / --self-test
+  web.js               entry point: the HTTP server (npm run web)
+  app/headless.js      the command line (npm run cli)
   pipeline.js          the five stages of a run, logged as they happen
+  portalRun.js         one date, or a range, pulled from the portal and mapped
   core/
     appdata.js         the writable locations, and the application log
-    logger.js          the log every stage writes to; the window's live feed
+    logger.js          the log every stage writes to; the page's live feed
+    credentials.js     the remembered username
+    portalSession.js   the one signed-in portal session
     csv.js             RFC-4180 reader (quoted newlines, Indian-grouped amounts)
     sheet.js           CSV + XLSX reduced to one common shape
     detect.js          identify a file by its column layout
@@ -323,239 +249,41 @@ src/
     prq.js po.js grn.js   one module per section
   excel/
     master.js          read/append/update the master report
-    template.js        GENERATED — the reference format, baked in as base64
+    template.js        GENERATED: the reference format, baked in as base64
   scraper/
-    index.js           half 1: Puppeteer driving Microsoft Edge, headful
+    index.js           half 1: Puppeteer driving Microsoft Edge
   ui/
-    server.js          127.0.0.1 + per-launch token, log streamed over SSE
+    server.js          HTTP server: Basic Auth, JSON API, log streamed over SSE, download
     page.js            the whole UI, one self-contained page, no external assets
-    dialogs.js         native file/folder pickers
 tools/
-  build.js                 the one production build
-  launcher/Launcher.cs     the single-file launcher the customer runs (C#)
-  launcher/Pack.cs         build-time LZMS compressor (developer machine only)
-  make-icon.js             generates assets/icon.ico
   gen-template.js          re-bakes the reference format into src/excel/template.js
-  selftest.js              81 checks against the real reference files
-  release-test.js          checks the built exe, in isolation, as a customer
-  audit-dependencies.js    every DLL the exe asks Windows for, from its PE
-                           import table — how "nothing to install" is checked
-  check-failure-dialog.js  provokes the launcher's failure path and confirms
-                           the customer actually sees a dialog
-  check-unpack-recovery.js compiles Launcher.cs against a small payload and
-                           checks it still starts when Windows will not let it
-                           replace the folder it unpacks into
+  selftest.js              checks against the real reference files
   check-alert-capture.js   regression check for the empty-report alert race
-                           against a local page — see Project status above
-  inspect-purchase-form.js dumps every control on the live Purchase Report
-                           form, as the DOM has it, against a signed-in session
-  probe-purchase-filters.js runs the live Purchase Report with different
-                           filter combinations and reports what each one
-                           actually returns — both need portal access
+                           against a local page; see Project status above
 ```
 
 ## Development
 
 ```
 npm install
-npm start           # open the app window from source
-npm test            # 81 checks against ../reference
-npm run build       # -> dist/Pharmacy-MIS.exe   (1-5 min, see below)
-npm run release-test # checks the built exe, not the source  (~5 min)
-npm run audit-deps  # lists every DLL the exe asks Windows for
-npm run check-failure-dialog  # proves the launcher's error dialog appears
-npm run check-unpack-recovery # proves a locked runtime folder cannot stop a launch
+npm run web                   # run the server from source
+npm test                      # checks against ../reference
 npm run check-alert-capture   # regression check for the empty-report alert race (launches a real browser)
 ```
 
-Build time is dominated by compressing the payload — LZMS takes about 90
-seconds on 240 MB, and verifies itself by decompressing and comparing before
-the payload is used.
-
-The first build on a new clone also downloads Puppeteer's Chromium (~400 MB)
-into `.chromium-cache/`. `npm install` normally does that through the
-`postinstall` script; step 4 of the build does it too if the folder is missing,
-so a clone that was installed with `--ignore-scripts` still builds.
-
 `npm test` runs the real files in `../reference` through the whole pipeline and
 asserts the eight figures, the identification (including after renaming), the
-preserved formatting, append-vs-update, month rollover, dry run, and the error
-paths. Expected figures for the reference set:
-
-```
-C=21  D=29  E=26  F=31  G=1674801.30  H=80  I=169  J=2656763.31
-```
+preserved formatting, append-vs-update, month rollover, dry run, the download
+path guard, and the error paths.
 
 If the master's reference format changes, drop the new workbook into
-`../reference/` and run `npm run build` — step 1 re-bakes the template.
-
-## How the exe is built
-
-`npm run build` is the only production command. It does nine things:
-
-1. bakes `../reference/Daily Report for coding.xlsx` into
-   `src/excel/template.js` as base64, so the exe carries the master report's
-   exact formatting and no reference file is ever shipped
-2. generates `assets/icon.ico` (drawn in code by `tools/make-icon.js`, so the
-   icon is reproducible rather than a committed binary)
-3. runs the source self-test and **refuses to build if it fails**
-4. makes sure Puppeteer's Chromium is in `.chromium-cache/`, downloading it if
-   it is not — that folder is ~400 MB, so it is gitignored and absent on a
-   fresh clone; the build fetches it rather than stopping
-5. has `electron-builder --dir` assemble the Electron application, then copies
-   `.chromium-cache/` into its resources folder
-6. removes the locales and helper executables the application never loads
-7. packs the whole application into one brotli-compressed payload
-8. compiles the launcher with `csc.exe` (the C# compiler that ships with
-   Windows) and appends the payload to it
-9. verifies the result and writes `Pharmacy-MIS.exe.sha256`
-
-### Why Electron, and why a launcher of our own
-
-**The window.** The previous build started a local server and opened the
-machine's own Edge with `--app=<url>`. That is broken in a way that only shows
-up away from the developer's machine: Edge's launcher process hands the command
-line to the real browser process and exits about 80 ms later (measured). The old
-`main.js` watched that launcher for `exit` and treated it as "the user closed
-the window", so it shut its own server down roughly a second after starting —
-and the window that did appear then showed *"This site can't be reached."* It
-also made the GUI depend on a browser the customer might not have. Electron
-carries its own Chromium, so the window belongs to the application, its lifetime
-is not something that has to be guessed at, and there is nothing to install.
-
-**The single file.** `electron-builder`'s own `portable` target is the obvious
-way to get one exe, and it was tried first. Its NSIS stub exits with code 1 on
-this machine without unpacking anything, printing nothing and logging nothing —
-precisely the opaque third-party failure this whole exercise exists to remove.
-[tools/launcher/Launcher.cs](tools/launcher/Launcher.cs) replaces it: the whole
-application, compressed and appended to the end of the launcher, unpacked into
-`%LOCALAPPDATA%` on first run, keyed by version and payload hash. Every step is
-ours, every failure is shown to the user in words and written to the log.
-
-**Why the launcher is C# and about 20 KB.** The first working version of it was
-a Node single executable, and it did the same job — but a copy of `node.exe` is
-91 MB. That was half the release, spent on a runtime whose only work was to
-decompress and spawn. Rewriting it against components Windows already has took
-the release from 176 MB to about 91 MB. It uses two in-box Windows components:
-
-| Component | Used for | Present on |
-| --- | --- | --- |
-| .NET Framework 4.x | the launcher itself | Windows 10 1903+ and Windows 11, non-removable |
-| `cabinet.dll` (Compression API) | LZMS decompression | every Windows since 8 |
-
-LZMS matters: it compresses this payload to 90 MB where Deflate — the only
-thing .NET Framework offers natively — manages 104 MB, and it is only 1.6 MB
-behind Brotli, which .NET Framework does not have at all.
-
-The compiler is `csc.exe` from that same in-box .NET Framework, at a fixed path
-under `%SystemRoot%\Microsoft.NET\Framework64`. No SDK, no Visual Studio and
-nothing to download. `/target:winexe` makes it a GUI-subsystem binary, so
-Windows never gives it a console window — checked in the build and again in the
-release check. Dropping the Node route also removed `postject` and `rcedit` from
-the build: the C# compiler writes the version resource from assembly attributes
-and takes the icon with `/win32icon`.
-
-### Code signing
-
-The exe is unsigned. Windows SmartScreen will therefore show *"Windows
-protected your PC"* on a machine that has not seen the file before — **More
-info → Run anyway**, once. This is Windows commenting on the publisher, not a
-sign that anything is missing.
-
-For production, sign it with an OV or EV certificate; an EV certificate clears
-SmartScreen immediately, an OV one builds reputation over time:
-
-```powershell
-signtool sign /fd SHA256 /f cert.pfx /p <password> `
-  /tr http://timestamp.digicert.com /td SHA256 dist\Pharmacy-MIS.exe
-```
-
-Signing is not required for development and the build does not depend on it.
-Re-run `npm run release-test` after signing, and regenerate the SHA-256.
-
-Signing appends the certificate to the end of the file, which moves the payload
-trailer away from where it was written. The launcher therefore searches
-backwards for it rather than reading a fixed offset, so signing before or after
-appending both work — the release cannot be broken by the act of signing it.
-
-## Verifying a release
-
-```
-npm run release-test
-```
-
-This tests `dist/Pharmacy-MIS.exe` and nothing else. It copies **only** the exe
-into a scratch folder, copies the three reference inputs in under meaningless
-names, and then checks, through the exe:
-
-- the Windows version metadata, icon, GUI subsystem and SHA-256
-- the exe's own built-in diagnostic (`--self-test`), including the embedded
-  template and UI, the loopback server and its token check
-- a real run against the reference dataset, asserting all eight figures
-- the generated workbook's title band, headers, widths, borders, merged cells
-  and number formats
-- update-in-place, append, and month rollover
-- the error paths: no `--root`, a missing folder, an empty folder, malformed
-  files, and a run with only one of the three sources
-- the exe run from five different working directories, after being renamed, and
-  with `PATH` cut down to `System32` so no Node, npm or Python is reachable
-- that nothing was written beside the exe
-- that a window opens on a bare double-click, is still open fifteen seconds
-  later, and that closing it shuts the application down
-- that a failed run writes a readable error file into the customer's Documents
-  folder, naming what went wrong and what to do with it
-
-## Runtime dependencies
-
-**None that the customer has to install.** Everything the application needs is
-either inside the exe or already part of Windows.
-
-Inside the exe: the browser engine, the JavaScript runtime, the Excel writer,
-the report template and the whole UI.
-
-Already part of Windows — these are components, not downloads, and none can be
-uninstalled on a supported system:
-
-| What | Used for | Present on |
-| --- | --- | --- |
-| .NET Framework 4.x | the launcher that unpacks and starts the app | Windows 10 1903 and later, Windows 11 |
-| `cabinet.dll` | decompressing the payload (LZMS) | every Windows since 8 |
-| core Windows DLLs | the application itself | every Windows 10/11 — verified against the exe's PE import table by `npm run audit-deps` |
-
-Requires **64-bit Windows 10 or 11**. Explorer is used only for the *Open
-master* and *Show in folder* buttons; neither is needed to generate a report.
-
-A note on the .NET Framework line, since it is the one thing here that is not
-strictly unconditional: this used to be a Node single executable with no
-dependency at all, which cost 91 MB — half the release — for a runtime that
-only decompressed and spawned. The trade was made deliberately, to halve the
-download. If a target machine somehow lacks .NET Framework 4.x, Windows itself
-prompts to enable it; the application cannot show its own dialog in that case,
-because nothing of it has run yet. Reverting to the zero-dependency launcher is
-a contained change if that ever matters more than the size.
-
-At build time, `exceljs` is the single runtime dependency: no native `.node`
-binaries anywhere in its tree, nothing spawning an external process, and nothing
-reading an asset relative to its own install location. `npm audit` flags a
-moderate advisory against the `uuid` version `exceljs` pins; it is not reachable
-from anything this application does, but it is worth re-checking when exceljs
-next updates.
+`../reference/` and run `node tools/gen-template.js` to re-bake the template.
 
 ## Known limitations
 
-- **x64 only.** There is no ARM64 build. Add `arm64` to the electron-builder
-  target and build on, or cross-build for, that architecture if it is needed.
-- **Unsigned.** See *Code signing* above.
-- **First launch is slower.** The first run unpacks the application into
-  `%LOCALAPPDATA%`, which takes a few seconds and about 240 MB of disk. Later
-  runs skip it entirely. The exe itself is 90 MB.
-- **Not verified on a genuinely clean Windows machine.** This development
-  machine has neither Hyper-V nor Windows Sandbox, so no true bare VM was
-  available. The isolation in `npm run release-test` — a folder holding nothing
-  but the exe, a stripped `PATH`, several working directories, and a renamed
-  copy — is the strongest verification available without one. It does not cover
-  AppLocker/WDAC policies that block unsigned executables outright.
-- **The portal pull needs Microsoft Edge on the machine it runs on.** It is
-  admin-machine-only, requires Edge to be installed (it drives Edge visibly
-  rather than a bundled headless browser), and its absence cannot prevent the
-  customer's application from starting — the mapping half still works.
+- **The portal pull needs Microsoft Edge on the machine that runs the server**, and
+  that machine must be able to reach the Amrita HIS portal.
+- **Headless Edge is untried against the live portal.** Set `PHARMACY_MIS_HEADFUL=1` if
+  the portal rejects it.
+- **One user at a time.** One run lock and one portal sign-in are shared by every
+  browser session.

@@ -1828,62 +1828,10 @@ async function runPoReport(page, { reportDate, downloadDir }, log) {
   }
 }
 
-/* ------------------------------------------------------------------ *
- * Chromium location
- * ------------------------------------------------------------------ */
-
 /**
- * Puppeteer needs its own Chromium at runtime — Electron's own Chromium is
- * not something Puppeteer can drive. .puppeteerrc.cjs pins `npm install`'s
- * download to a project-relative .chromium-cache/ folder rather than the OS
- * user-cache directory Puppeteer uses by default, specifically so it can be
- * shipped inside the exe (see tools/build.js's "Package Puppeteer's
- * Chromium" step, which copies that folder to <app>/resources/chromium-cache
- * via electron-builder's extraResources).
- *
- * This resolves the actual chrome executable by scanning rather than by
- * reconstructing Puppeteer's internal cache path format (which has changed
- * across major versions) — robust to exactly one browser being installed,
- * which is what a project pinned to one Puppeteer version always has.
- */
-function resolveChromiumExecutablePath() {
-  const candidates = [
-    path.join(__dirname, '..', '..', '.chromium-cache'), // development / npm start
-  ];
-  if (process.resourcesPath) candidates.push(path.join(process.resourcesPath, 'chromium-cache')); // packaged exe
-
-  for (const dir of candidates) {
-    const found = findChromeExecutable(dir);
-    if (found) return found;
-  }
-  return null; // let Puppeteer fall back to its own default resolution
-}
-
-function findChromeExecutable(dir) {
-  if (!fs.existsSync(dir)) return null;
-  const stack = [dir];
-  while (stack.length) {
-    const current = stack.pop();
-    let entries;
-    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (/^chrome\.exe$/i.test(entry.name) || entry.name === 'chrome') return full;
-    }
-  }
-  return null;
-}
-
-/**
- * Microsoft Edge, which is what the operator watches the run happen in. Edge
- * is Chromium under the skin, so Puppeteer drives it over the same CDP it
- * uses for its own bundled Chromium — the only difference is the executable.
- *
- * Deliberately not falling back to the bundled Chromium above: seeing the run
- * in the browser the operator recognises is the point, and a silent swap to
- * something that merely looks like Chrome would defeat it. If Edge is
- * missing, startSession() says so rather than substituting something else.
+ * Microsoft Edge, found on the machine that runs the app. Edge is Chromium under
+ * the skin, so Puppeteer drives it over CDP. If it is missing, startSession()
+ * says so rather than substituting another browser.
  */
 function resolveEdgeExecutablePath() {
   const candidates = [
@@ -2004,8 +1952,8 @@ async function startSession(credentials, log) {
   const executablePath = resolveEdgeExecutablePath();
   if (!executablePath) {
     throw new Error(
-      'Microsoft Edge was not found on this machine, and the portal automation runs in Edge '
-      + 'so the run can be watched. Install Microsoft Edge, or set PHARMACY_MIS_EDGE_PATH to '
+      'Microsoft Edge was not found on this machine, and the portal automation runs in Edge. '
+      + 'Install Microsoft Edge, or set PHARMACY_MIS_EDGE_PATH to '
       + 'the full path of msedge.exe.',
     );
   }
@@ -2019,7 +1967,8 @@ async function startSession(credentials, log) {
       // Headful and in front, on purpose: the operator watches the run happen
       // rather than trusting a text log alone, and can see exactly where it
       // stopped if something goes wrong.
-      headless: false,
+      // Server default is headless; set PHARMACY_MIS_HEADFUL=1 if the portal rejects it.
+      headless: !process.env.PHARMACY_MIS_HEADFUL,
       executablePath,
       // A throwaway profile: the operator's own Edge windows, tabs, cookies
       // and signed-in identity are never touched, and a stale portal cookie
@@ -2031,6 +1980,8 @@ async function startSession(credentials, log) {
       defaultViewport: null,
       args: [
         '--start-maximized',
+        // Headless has no screen to maximize into; give the portal a desktop-sized page.
+        '--window-size=1920,1080',
         '--no-first-run',
         '--no-default-browser-check',
         // Without this, Edge on Windows does its own "compatibility layer"
@@ -2174,103 +2125,15 @@ async function runReports(session, { layout }, log) {
   }
 }
 
-/**
- * One authenticated session, start to finish: sign in and run all three
- * reports, closing the browser before returning either way. This is what the
- * single-shot CLI path uses (src/portalRun.js) — the GUI instead calls
- * startSession() and runReports() separately so it can show "signed in,
- * verified" before the reports run (see src/ui/server.js's /api/login and
- * /api/run-portal).
- */
-async function pullFromPortal({ layout, credentials, log }) {
-  const session = await startSession(credentials, log);
-  try {
-    return await runReports(session, { layout }, log);
-  } finally {
-    await closeSession(session);
-  }
-}
-
-/**
- * Pull the day's reports into layout.dayInputsDir and hand back a summary the
- * rest of the app can use. `credentials` ({ username, password }) is used
- * only for the duration of this call — nothing here writes it anywhere, and
- * the caller is responsible for not holding onto it longer than needed (see
- * src/ui/server.js).
- */
-async function fetchDailyInputs({ layout, credentials = {}, log }) {
-  const close = log.step('Portal pull (Puppeteer)');
-  try {
-    if (!isAvailable()) {
-      log.warn('Puppeteer is not installed in this build - the portal pull is unavailable here.');
-      log.info('Use "Pick inputs folder" or the file pickers to map files that were pulled or exported by hand.');
-      throw new Error(
-        'Portal pull unavailable: Puppeteer is not part of this build. '
-        + 'Install it (npm install puppeteer) to enable the Amrita HIS automation.',
-      );
-    }
-    if (!credentials.username || !credentials.password) {
-      throw new Error('Amrita HIS username and password are required to run the portal pull.');
-    }
-
-    ensureDir(layout.dayInputsDir);
-    log.info(`downloads will land in ${layout.dayInputsDir}`);
-
-    const result = await pullFromPortal({ layout, credentials, log });
-
-    // runReports() already stops the run if a download never landed on disk,
-    // so this is belt-and-braces — kept as a hard stop rather than a warning
-    // so a future change to runReports() cannot quietly reopen this gap.
-    const missing = result.files.filter((f) => !fs.existsSync(f));
-    if (missing.length) {
-      throw new Error(
-        `${missing.length} expected download(s) did not appear on disk: `
-        + `${missing.map((f) => path.basename(f)).join(', ')}. `
-        + 'The run was stopped rather than classifying whatever was already in the folder.',
-      );
-    }
-    log.ok(`pulled ${result.files.length} file(s)`);
-
-    return { files: result.files, date: result.reportDate };
-  } finally {
-    close();
-  }
-}
-
 module.exports = {
-  reportPageLooksOpen,
-  describePage,
-  fetchDailyInputs,
-  pullFromPortal,
   startSession,
   closeSession,
   runReports,
-  login,
-  verifyAuthentication,
   isAvailable,
   REPORTS,
-  navigateToReport,
-  clickMenuItemByText,
-  ensureSidebarOpen,
-  findFieldByLabel,
-  focusAndType,
-  realClick,
-  selectAllOptions,
-  selectAllVisibleMultiSelects,
-  auditFormFields,
   // Exported so the alert-capture path can be exercised against a local page
   // that alerts on load, without standing up a whole portal session.
   attachDialogCapture,
   captureDialogsEverywhere,
   takeDialog,
-  // Exported for tools/inspect-purchase-form.js, which drives the Purchase
-  // Report form one control at a time to see what each one actually does to
-  // the result.
-  setDateRange,
-  selectDropdownValue,
-  selectAllOptions,
-  selectReportFormat,
-  runReportAndWaitForDownload,
-  waitForFieldByLabel,
-  allFrames,
 };

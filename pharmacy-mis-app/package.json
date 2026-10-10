@@ -1,64 +1,23 @@
 {
   "name": "pharmacy-mis",
-  "productName": "Pharmacy MIS",
   "version": "1.0.0",
   "description": "Daily Purchase & Inventory MIS Report automation for Pharmacy",
-  "main": "src/app/main.js",
+  "main": "src/web.js",
   "author": "Sudhamayi Enterprise Pvt. Ltd.",
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
-    "postinstall": "puppeteer browsers install chrome",
-    "start": "electron .",
-    "cli": "electron . --cli",
+    "start": "node src/web.js",
+    "web": "node src/web.js",
+    "cli": "node src/app/headless.js",
     "test": "node tools/selftest.js",
-    "check-scraper-fields": "node tools/check-scraper-fields.js",
-    "icon": "node tools/make-icon.js",
-    "build": "node tools/build.js",
-    "release-test": "node tools/release-test.js",
-    "audit-deps": "node tools/audit-dependencies.js",
-    "check-alert-capture": "node tools/check-alert-capture.js",
-    "check-failure-dialog": "node tools/check-failure-dialog.js",
-    "check-unpack-recovery": "node tools/check-unpack-recovery.js"
+    "check-alert-capture": "node tools/check-alert-capture.js"
   },
   "dependencies": {
     "exceljs": "4.4.0",
     "puppeteer": "25.10.0"
   },
-  "devDependencies": {
-    "electron": "33.4.11",
-    "electron-builder": "25.1.8"
-  },
-  "build": {
-    "appId": "com.sudhamayi.pharmacymis",
-    "productName": "Pharmacy MIS",
-    "copyright": "Copyright © Sudhamayi Enterprise Pvt. Ltd.",
-    "asar": true,
-    "compression": "normal",
-    "npmRebuild": false,
-    "buildDependenciesFromSource": false,
-    "directories": {
-      "output": "build",
-      "buildResources": "assets"
-    },
-    "files": [
-      "src/**/*",
-      "assets/icon.ico",
-      "package.json",
-      "!**/*.map",
-      "!**/{.eslintrc,.editorconfig,.gitignore}"
-    ],
-    "win": {
-      "target": [
-        "dir"
-      ],
-      "icon": "assets/icon.ico",
-      "legalTrademarks": "Sudhamayi Enterprise Pvt. Ltd.",
-      "requestedExecutionLevel": "asInvoker",
-      "signAndEditExecutable": false
-    }
-  },
-  "allowScripts": {
-    "electron@33.4.11": true
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }

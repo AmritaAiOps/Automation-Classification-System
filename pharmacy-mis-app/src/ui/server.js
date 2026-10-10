@@ -3,14 +3,15 @@
 const http = require('http');
 const crypto = require('crypto');
 const { runDailyReport } = require('../pipeline');
-const { pickFolder, pickFile, revealInExplorer, openWithDefaultApp } = require('./dialogs');
-const { resolveLayout, dateFromName, getPreviousCalendarDay, getToday, formatPortalDate } = require('../core/paths');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { resolveLayout, enumerateDates, dateFromName, getPreviousCalendarDay, getToday, formatPortalDate } = require('../core/paths');
 const { page } = require('./page');
 const { log } = require('../core/appdata');
 const { loadSavedUsername, saveUsername, clearSavedUsername } = require('../core/credentials');
-const { loadSettings, saveSettings } = require('../core/settings');
 const portalSession = require('../core/portalSession');
-const { makeLogger, LOGIN_FAILURE } = require('../portalRun');
+const { makeLogger, runOneDate } = require('../portalRun');
 
 /**
  * The portal scraper is the admin-only half of the project and is not part of
@@ -32,23 +33,9 @@ function scraperInfo() {
   }
 }
 
-/**
- * The application version. Taken from Electron, which reads it out of the
- * package.json inside the packaged asar, so there is no file to find on disk
- * next to the exe. Outside Electron (the test harness) it degrades to the
- * source package.json, and to 'unknown' if even that is not there.
- */
+/** The application version, read from package.json. */
 function appVersion() {
-  try {
-    // eslint-disable-next-line global-require
-    return require('electron').app.getVersion();
-  } catch { /* not running under Electron */ }
-  try {
-    // eslint-disable-next-line global-require
-    return require('../../package.json').version;
-  } catch {
-    return 'unknown';
-  }
+  return require('../../package.json').version;
 }
 
 /**
@@ -61,6 +48,32 @@ function appVersion() {
  */
 
 const TOKEN = crypto.randomBytes(24).toString('hex');
+
+/** The archive lives on the server; browsers never choose a server path. */
+function archiveRoot() {
+  if (!process.env.ARCHIVE_ROOT) throw new Error('ARCHIVE_ROOT is not set on the server.');
+  return path.resolve(process.env.ARCHIVE_ROOT);
+}
+
+/** True when `file` is inside the archive root (blocks ../ and absolute escapes). */
+function insideArchive(file) {
+  const rel = path.relative(archiveRoot(), path.resolve(file));
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function sameString(a, b) {
+  const x = crypto.createHash('sha256').update(String(a)).digest();
+  const y = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(x, y);
+}
+
+/** HTTP Basic Auth against APP_USER / APP_PASSWORD. Only safe over HTTPS off the LAN. */
+function authorized(req) {
+  const m = /^Basic (.+)$/.exec(req.headers.authorization || '');
+  if (!m) return false;
+  const [user, ...rest] = Buffer.from(m[1], 'base64').toString('utf8').split(':');
+  return sameString(user, process.env.APP_USER || 'admin') & sameString(rest.join(':'), process.env.APP_PASSWORD || '');
+}
 
 /** Open SSE connections, keyed by an id so a stale one can be dropped. */
 const streams = new Map();
@@ -145,27 +158,47 @@ function logRunOutcome(result, archiveRoot, reportDate, inputFolder) {
   );
 }
 
+/** One date inside the signed-in session, plus the GUI's session upkeep and events. */
+async function runPortalForDate(session, archiveRoot, reportDate) {
+  const result = await runOneDate(session, archiveRoot, reportDate, (entry) => broadcast('log', entry));
+  // Signed out on the portal's side (or the browser went away mid-run):
+  // nothing left worth keeping open, and the window has to ask for a fresh
+  // sign-in. Anything else keeps the session for the next date / Run.
+  if (result.stage === 'login' || !session.browser.connected) {
+    if (portalSession.get() === session) await portalSession.clear();
+  }
+  result.signedIn = portalSession.isActive();
+  broadcast('run-end', result);
+  logRunOutcome(result, archiveRoot, result.date, null);
+  return result;
+}
+
 const routes = {
   /** Manual / preview run — files already pulled or exported by hand. Unchanged from before the Amrita HIS integration. */
   async 'POST /api/run'(body) {
     if (runInFlight) throw new Error('A run is already in progress.');
     runInFlight = true;
     broadcast('run-start', { at: new Date().toISOString(), dryRun: !!body.dryRun, usingPortal: false });
+    // Uploaded files ({PRQ:{name,data(base64)}, ...}) are staged in a temp dir for this run only.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-mis-upload-'));
     try {
+      const files = {};
+      for (const [slot, f] of Object.entries(body.files || {})) {
+        if (!f || !f.data) continue;
+        const dest = path.join(tmp, slot + '_' + path.basename(String(f.name || slot)));
+        fs.writeFileSync(dest, Buffer.from(f.data, 'base64'));
+        files[slot] = dest;
+      }
+      const root = archiveRoot();
       const result = await runDailyReport(
-        {
-          archiveRoot: body.archiveRoot,
-          inputFolder: body.inputFolder || null,
-          files: body.files || {},
-          reportDate: body.reportDate || null,
-          dryRun: !!body.dryRun,
-        },
+        { archiveRoot: root, inputFolder: null, files, reportDate: body.reportDate || null, dryRun: !!body.dryRun },
         (entry) => broadcast('log', entry),
       );
       broadcast('run-end', result);
-      logRunOutcome(result, body.archiveRoot, body.reportDate, body.inputFolder);
+      logRunOutcome(result, root, body.reportDate, null);
       return result;
     } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
       runInFlight = false;
     }
   },
@@ -242,60 +275,39 @@ const routes = {
   async 'POST /api/run-portal'(body) {
     if (runInFlight) throw new Error('A run is already in progress.');
     if (!portalSession.isActive()) throw new Error('No active Amrita HIS sign-in. Sign in first.');
-    if (!body.archiveRoot) throw new Error('Choose the archive root folder first.');
+    const root = archiveRoot();
+
+    const fromDate = body.fromDate || body.reportDate || getPreviousCalendarDay().iso;
+    const dates = enumerateDates(fromDate, body.toDate || null); // throws on a bad/reversed range
     runInFlight = true;
 
     const session = portalSession.get();
-    const reportDate = body.reportDate || getPreviousCalendarDay().iso;
-    const layout = resolveLayout(body.archiveRoot, reportDate);
-
-    broadcast('run-start', { at: new Date().toISOString(), dryRun: false, usingPortal: true });
+    broadcast('run-start', { at: new Date().toISOString(), dryRun: false, usingPortal: true, dates });
     try {
-      const sink = (entry) => broadcast('log', entry);
-      let result;
-      try {
-        // eslint-disable-next-line global-require
-        const scraper = require('../scraper');
-        let pull;
-        try {
-          pull = await scraper.runReports(session, { layout }, makeLogger(sink));
-        } catch (err) {
-          const message = err && err.message ? err.message : String(err);
-          // A pull that stopped partway through never has files worth
-          // classifying — the classification stage below must not run against
-          // whatever was already sitting in the folder from a previous day.
-          throw Object.assign(new Error(message), {
-            stage: LOGIN_FAILURE.test(message) ? 'login' : 'portal',
-            screenshot: err.screenshot || null,
-            docLink: err.docLink || null,
-            docLinkLabel: err.docLinkLabel || null,
-          });
-        }
-        result = await runDailyReport({ archiveRoot: layout.root, reportDate: layout.date.iso, dryRun: false }, sink);
-        if (result.ok) result.portalFiles = pull.files;
-        else result.stage = 'automation';
-      } catch (err) {
-        const message = err && err.message ? err.message : String(err);
-        result = {
-          ok: false,
-          error: message,
-          stage: err.stage || (LOGIN_FAILURE.test(message) ? 'login' : 'automation'),
-          screenshot: err.screenshot || null,
-          docLink: err.docLink || null,
-          docLinkLabel: err.docLinkLabel || null,
-          log: [],
-        };
+      const results = [];
+      let last = null;
+      for (let i = 0; i < dates.length; i += 1) {
+        broadcast('date-start', { date: dates[i], index: i + 1, total: dates.length });
+        last = await runPortalForDate(session, root, dates[i]);
+        results.push({ date: dates[i], ok: !!last.ok, error: last.ok ? null : last.error });
+        // Nothing more can work once the portal has signed us out or the browser has gone.
+        if (last.stage === 'login' || !session.browser.connected) break;
       }
-      // Signed out on the portal's side (or the browser went away mid-run):
-      // nothing left worth keeping open, and the window has to ask for a fresh
-      // sign-in. Anything else keeps the session for the next Run.
-      if (result.stage === 'login' || !session.browser.connected) {
-        if (portalSession.get() === session) await portalSession.clear();
-      }
-      result.signedIn = portalSession.isActive();
-      broadcast('run-end', result);
-      logRunOutcome(result, layout.root, layout.date.iso, null);
-      return result;
+      const skipped = dates.slice(results.length);
+      const summary = {
+        ok: results.every((r) => r.ok) && !skipped.length,
+        results,
+        skipped,
+        signedIn: portalSession.isActive(),
+        // Not named "error": the page's api() treats that field as a failed request.
+        failures: results.filter((r) => !r.ok).map((r) => `${r.date}: ${r.error}`).join('\n') || null,
+        stage: last && last.stage,
+        screenshot: (last && last.screenshot) || null,
+        docLink: (last && last.docLink) || null,
+        docLinkLabel: (last && last.docLinkLabel) || null,
+      };
+      broadcast('batch-end', summary);
+      return summary;
     } finally {
       runInFlight = false;
     }
@@ -306,9 +318,9 @@ const routes = {
    * show the resolved paths before anything is run.
    */
   async 'POST /api/resolve'(body) {
-    if (!body.archiveRoot || !body.reportDate) return { ok: false };
+    if (!body.reportDate) return { ok: false };
     try {
-      const l = resolveLayout(body.archiveRoot, body.reportDate);
+      const l = resolveLayout(archiveRoot(), body.reportDate);
       return {
         ok: true,
         monthDir: l.monthDir,
@@ -322,16 +334,6 @@ const routes = {
     }
   },
 
-  async 'POST /api/pick-folder'(body) {
-    const folder = await pickFolder({ title: body.title, initial: body.initial });
-    return { path: folder, dateFromName: folder ? dateFromName(folder) : null };
-  },
-
-  async 'POST /api/pick-file'(body) {
-    const file = await pickFile({ title: body.title, initial: body.initial });
-    return { path: file, dateFromName: file ? dateFromName(file) : null };
-  },
-
   /** The remembered username, if "Remember username" was checked on a previous run — never the password. */
   async 'GET /api/saved-username'() {
     return { username: loadSavedUsername() };
@@ -342,24 +344,11 @@ const routes = {
     return { ok: true };
   },
 
-  async 'POST /api/reveal'(body) {
-    if (!body.path) throw new Error('Nothing to show.');
-    await revealInExplorer(body.path);
-    return { ok: true };
-  },
-
-  async 'POST /api/open'(body) {
-    if (!body.path) throw new Error('Nothing to open.');
-    await openWithDefaultApp(body.path);
-    return { ok: true };
-  },
-
   async 'GET /api/status'() {
     return {
       ok: true,
       version: appVersion(),
       node: process.versions.node,
-      electron: process.versions.electron || null,
       scraper: scraperInfo(),
       today: getToday().iso,
       reportDate: getPreviousCalendarDay().iso,
@@ -369,16 +358,7 @@ const routes = {
       // the window restore that state if it reconnects mid-flow.
       signedIn: portalSession.isActive(),
       signedInUsername: portalSession.activeUsername(),
-      // The Dashboard's own choices, which used to live in the page's
-      // localStorage and so were lost every launch — the server picks a new
-      // port each time, and that made a new empty store each time.
-      settings: loadSettings(),
     };
-  },
-
-  /** Remember the Dashboard's choices for next launch. Fire-and-forget from the page. */
-  async 'POST /api/settings'(body) {
-    return { ok: true, settings: saveSettings(body) };
   },
 };
 
@@ -386,6 +366,12 @@ function createServer() {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const key = `${req.method} ${url.pathname}`;
+
+    if (!authorized(req)) {
+      res.writeHead(401, { 'www-authenticate': 'Basic realm="Pharmacy MIS"', 'content-type': 'text/plain' });
+      res.end('Sign in required');
+      return;
+    }
 
     // The page itself is the only unauthenticated route, and it is what hands
     // the token to the client.
@@ -418,11 +404,25 @@ function createServer() {
       return;
     }
 
+    if (key === 'GET /api/download') {
+      try {
+        const file = path.resolve(url.searchParams.get('path') || '');
+        if (!insideArchive(file) || !fs.statSync(file).isFile()) throw new Error('not found');
+        res.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-length': fs.statSync(file).size,
+          'content-disposition': `attachment; filename="${path.basename(file).replace(/"/g, '')}"`,
+        });
+        fs.createReadStream(file).pipe(res);
+      } catch { json(res, 404, { error: 'File not found' }); }
+      return;
+    }
+
     const handler = routes[key];
     if (!handler) { json(res, 404, { error: `No route for ${key}` }); return; }
 
     try {
-      const body = req.method === 'POST' ? await readBody(req) : {};
+      const body = req.method === 'POST' ? await readBody(req, key === 'POST /api/run' ? 64 * 1024 * 1024 : undefined) : {};
       json(res, 200, await handler(body));
     } catch (err) {
       json(res, 400, { error: err && err.message ? err.message : String(err) });
@@ -460,4 +460,4 @@ function createServer() {
   return { server, token: TOKEN, broadcast, shutdown };
 }
 
-module.exports = { createServer, TOKEN };
+module.exports = { createServer, TOKEN, insideArchive };
