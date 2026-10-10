@@ -66,39 +66,38 @@ runs without portal access.
 
 ## Running it
 
-Set these, then start the server (PowerShell):
-
 ```powershell
-$env:APP_PASSWORD = "choose-a-password"          # required
-$env:ARCHIVE_ROOT = "D:\Pharmacy-MIS-Archive"     # required; a folder on the server
-$env:APP_USER = "admin"                          # optional, default admin
-$env:PORT = "8080"                               # optional, default 8080
 npm install
 npm run web
 ```
 
-- Browsers sign in with HTTP Basic Auth (APP_USER / APP_PASSWORD). That is only safe
-  over HTTPS, so for access from outside the LAN put it behind a Cloudflare Tunnel
-  (`cloudflared tunnel --url http://localhost:8080`).
-- Same network: open `http://<server-ip>:8080` and allow the port in Windows Firewall.
-- Always on: a Task Scheduler task "At startup" running `node src/web.js` with the variables above.
-- The portal pull runs Edge headless. If the portal rejects that, set
-  `PHARMACY_MIS_HEADFUL=1` to get a visible window on the server.
+Then open `http://localhost:8080` (or `http://<server-ip>:8080` from another PC on the network;
+allow port 8080 in Windows Firewall). Nothing needs configuring. Optional environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ARCHIVE_ROOT` | `./archive` next to the app | server folder holding the input and output files |
+| `MASTER_COPY_DIR` | unset | second location (e.g. a server share) that gets a copy of the month's master after every write, under `<year>/<MM-Month>/`; the primary master stays in `ARCHIVE_ROOT` |
+| `APP_PASSWORD` (+ `APP_USER`, default `admin`) | unset: no site login | turns on a browser login for the site; use it, with HTTPS, if the site is reachable outside a trusted network |
+| `PORT` / `HOST` | `8080` / `0.0.0.0` | where the server listens |
+| `PHARMACY_MIS_HEADFUL=1` | unset | show the portal browser window instead of running it headless |
+
+- Always on: a Task Scheduler task "At startup" running `node src/web.js`.
 - One run at a time and one portal sign-in, shared by everyone using the site.
 
-The page opens on the Amrita HIS sign-in screen, with **Reports to process** at the top
-of that card: a date field, pre-filled with yesterday but editable to any date. It is
-the one date control on the page, and both ways on from here read it.
+The page opens on the Amrita HIS sign-in screen. A task menu keeps the two ways of
+producing a master row apart:
 
-- **Sign In**, then **Run**: Puppeteer signs in, pulls the reports for that date and
-  maps them in one go.
-- **Continue without signing in (manual run)**: for reports already exported by hand.
-  Upload the three files (PRQ, PO, GRN); nothing is fetched, and the master row written
-  is exactly the same.
+- **Portal pull** (default): **Sign In**, then **Pull & run**. Puppeteer signs in and
+  pulls the reports for the chosen date range (pre-filled with yesterday), one day at a time.
+- **Manual upload**: for reports already exported by hand. Has its own report date; upload
+  the three files (PRQ, PO, GRN) and nothing is fetched. Tick *Preview only* to see every
+  figure and cell change without writing. Reachable without signing in.
+- **Files**: the input files pulled for a date and the month's master workbook, both on the
+  server, with buttons to save them to your PC.
 
-Either way, the results are written under `ARCHIVE_ROOT` on the server, and the
-**Download master** button fetches the month's workbook. Tick *Preview only* to see
-every figure and every intended cell change without writing anything.
+The log and results strip are tagged *Portal pull* or *Manual upload* so you can tell which
+path produced the numbers.
 
 The **Reports to process** date always wins over whatever the uploaded file names look
 like they are for, but a mismatch is not silent: the log names both dates and says
@@ -202,7 +201,7 @@ Consequences worth knowing, all covered by `npm run release-test`:
                 └── Master_Report_August_2026.xlsx
 ```
 
-The archive root is the server's `ARCHIVE_ROOT` folder. Missing folders are created
+The archive root is the server's `ARCHIVE_ROOT` folder (default `./archive`). Missing folders are created
 automatically.
 
 - One row per date, appended in order, `S.No` renumbered on every save.

@@ -49,10 +49,9 @@ function appVersion() {
 
 const TOKEN = crypto.randomBytes(24).toString('hex');
 
-/** The archive lives on the server; browsers never choose a server path. */
+/** The archive lives on the server (ARCHIVE_ROOT, default: ./archive); browsers never choose a server path. */
 function archiveRoot() {
-  if (!process.env.ARCHIVE_ROOT) throw new Error('ARCHIVE_ROOT is not set on the server.');
-  return path.resolve(process.env.ARCHIVE_ROOT);
+  return path.resolve(process.env.ARCHIVE_ROOT || path.join(__dirname, '..', '..', 'archive'));
 }
 
 /** True when `file` is inside the archive root (blocks ../ and absolute escapes). */
@@ -67,12 +66,13 @@ function sameString(a, b) {
   return crypto.timingSafeEqual(x, y);
 }
 
-/** HTTP Basic Auth against APP_USER / APP_PASSWORD. Only safe over HTTPS off the LAN. */
+/** Optional HTTP Basic Auth: only enforced when APP_PASSWORD is set (leave it unset on a trusted LAN). */
 function authorized(req) {
+  if (!process.env.APP_PASSWORD) return true;
   const m = /^Basic (.+)$/.exec(req.headers.authorization || '');
   if (!m) return false;
   const [user, ...rest] = Buffer.from(m[1], 'base64').toString('utf8').split(':');
-  return sameString(user, process.env.APP_USER || 'admin') & sameString(rest.join(':'), process.env.APP_PASSWORD || '');
+  return sameString(user, process.env.APP_USER || 'admin') & sameString(rest.join(':'), process.env.APP_PASSWORD);
 }
 
 /** Open SSE connections, keyed by an id so a stale one can be dropped. */
@@ -328,6 +328,11 @@ const routes = {
         outputsDir: l.outputsDir,
         masterFile: l.masterFile,
         monthFolder: l.date.monthFolder,
+        // What already exists for this date, so the page can offer downloads to the user's PC.
+        inputFiles: fs.existsSync(l.dayInputsDir)
+          ? fs.readdirSync(l.dayInputsDir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => path.join(l.dayInputsDir, e.name))
+          : [],
+        masterExists: fs.existsSync(l.masterFile),
       };
     } catch (err) {
       return { ok: false, error: err.message };

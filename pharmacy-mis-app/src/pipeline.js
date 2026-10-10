@@ -116,6 +116,19 @@ async function execute(options, log) {
   const write = await writeDailyRow({ masterFile: layout.masterFile, date: layout.date, fields, log, dryRun });
   closeStep();
 
+  // Second copy of the month's master on the server/share (MASTER_COPY_DIR), refreshed after every write.
+  // A failed copy is logged, never fatal: the local master is already saved.
+  if (write.written && process.env.MASTER_COPY_DIR) {
+    try {
+      const dest = path.join(process.env.MASTER_COPY_DIR, String(layout.date.year), layout.date.monthFolder);
+      ensureDir(dest);
+      fs.copyFileSync(layout.masterFile, path.join(dest, path.basename(layout.masterFile)));
+      log.ok(`master copy saved  ${dest}`);
+    } catch (err) {
+      log.warn(`master copy NOT saved to ${process.env.MASTER_COPY_DIR}: ${err.message}`);
+    }
+  }
+
   return {
     date: layout.date.iso,
     layout: {
