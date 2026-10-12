@@ -70,7 +70,9 @@ async function main() {
     path.basename(layout.masterFile),
     'Master_Report_August_2026.xlsx',
   );
-  check('inputs day folder', path.basename(layout.dayInputsDir), '2026-08-08');
+  check('inputs day folder', path.basename(layout.dayInputsDir), '08-08-2026');
+  check('date lifted from DD-MM-YYYY folder', dateFromName('inputs/08-08-2026'), '2026-08-08');
+  check('date lifted from dated file name', dateFromName('Pharmacy-PRQ-Details_09-08-2026.csv'), '2026-08-09');
   let threw = false;
   try { parseReportDate('2026-02-30'); } catch { threw = true; }
   truthy('impossible date rejected', threw);
@@ -226,9 +228,11 @@ async function main() {
   check('missing folder reported, not crashed', missing.ok, false);
   truthy('error message names the folder', /does not exist/i.test(missing.error), missing.error);
 
-  const noDate = await runDailyReport({ archiveRoot: root, inputFolder: scratch });
-  check('undated run refused', noDate.ok, false);
-  truthy('error explains how to fix it', /report date/i.test(noDate.error), noDate.error);
+  // There is no date field any more: a folder with no date in its name falls back to yesterday, with a warning.
+  const noDate = await runDailyReport({ archiveRoot: root, inputFolder: scratch, dryRun: true });
+  truthy('undated run falls back to yesterday', noDate.ok, noDate.error || '');
+  truthy('fallback is announced as a warning',
+    (noDate.log || []).some((e) => e.level === 'warn' && /yesterday/i.test(e.message)));
 
   const partial = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmis-partial-'));
   fs.copyFileSync(path.join(REFERENCE, 'Pharmacy PRQ Details(1).CSV'), path.join(partial, 'only_prq.csv'));

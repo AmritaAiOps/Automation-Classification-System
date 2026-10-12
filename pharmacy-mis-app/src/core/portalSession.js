@@ -9,8 +9,8 @@
  *
  * The session outlives a run on purpose, so the operator signs in once and can
  * Run again (another date, a retry) without signing in every time. It ends
- * when the operator closes the Edge window (the browser's 'disconnected'
- * event), signs out from the app, the portal itself signs it out, or the app
+ * when the operator clicks Logout (logout()), closes the Edge window (the
+ * browser's 'disconnected' event), the portal itself signs it out, or the app
  * is closed. There is no idle timer: closing Edge is the operator's way of
  * signing out. Only one session is ever held at a time — signing in again
  * closes whatever was there first.
@@ -77,8 +77,27 @@ async function clear() {
   await closeQuietly(session);
 }
 
+/**
+ * The Logout button: sign out of the portal (best effort) and drop the session.
+ * Detached first so the browser closing is not reported as "Edge was closed".
+ * Resolves true if a session was open.
+ */
+async function logout(log) {
+  if (!current) return false;
+  const { session } = current;
+  detach(current);
+  current = null;
+  try {
+    // eslint-disable-next-line global-require
+    await require('../scraper').logoutSession(session, log);
+  } catch {
+    await closeQuietly(session);
+  }
+  return true;
+}
+
 function detach(entry) {
   try { entry.session.browser.off('disconnected', entry.onDisconnect); } catch { /* browser already gone */ }
 }
 
-module.exports = { set, isActive, activeUsername, get, clear, onEnded };
+module.exports = { set, isActive, activeUsername, get, clear, logout, onEnded };

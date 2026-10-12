@@ -5,7 +5,7 @@ const path = require('path');
 const { Logger } = require('./core/logger');
 const { loadSheet } = require('./core/sheet');
 const { identifySheet } = require('./core/detect');
-const { resolveLayout, dateFromName, parseReportDate, ensureDir } = require('./core/paths');
+const { resolveLayout, dateFromName, parseReportDate, ensureDir, getPreviousCalendarDay } = require('./core/paths');
 const { mapPrq } = require('./mapping/prq');
 const { mapPo } = require('./mapping/po');
 const { mapGrn } = require('./mapping/grn');
@@ -161,7 +161,8 @@ function inferDateFromNames(options) {
 /**
  * The report date, in order of preference: what the user typed, then the date
  * embedded in the inputs folder name, then the date on the source filenames.
- * Nothing falls back to "today" silently - a wrong date writes the wrong row.
+ * Failing all of those, yesterday is used, with a warning. Nothing falls back to
+ * "today" silently - a wrong date writes the wrong row.
  */
 function resolveDate(options, log) {
   const inferred = inferDateFromNames(options);
@@ -195,17 +196,20 @@ function resolveDate(options, log) {
     if (inferred.distinct.length > 1) {
       throw new Error(
         `The source files are for more than one day (${inferred.distinct.join(', ')}), so the report `
-        + 'date cannot be worked out from them. Enter the date you want in the Date field.',
+        + 'date cannot be worked out from them. Use a folder that holds files for a single day only.',
       );
     }
     log.info(`date taken from ${inferred.source}: ${inferred.iso}`);
     return inferred.iso;
   }
 
-  throw new Error(
-    'Could not work out the report date. Either enter it in the Date field, or name the '
-    + 'inputs folder after it (e.g. inputs/2026-08-08).',
+  // No date field to ask any more: say plainly what is being assumed.
+  const fallback = getPreviousCalendarDay().iso;
+  log.warn(
+    `could not work out the report date from the folder or file names (e.g. 08-08-2026), `
+    + `so yesterday, ${fallback}, is being used. Name the inputs folder after the date to file it under another day.`,
   );
+  return fallback;
 }
 
 /**

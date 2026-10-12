@@ -920,12 +920,49 @@ async function runReportAndWaitForDownload(page, { downloadDir, label }, log) {
   return file;
 }
 
-/** Move a staged download into the day's inputs folder under a stable, human-readable name — never the browser's own (possibly reused) filename. */
-function movePortalFile(sourcePath, destDir, label, dateIso) {
+/**
+ * Move a staged download into the day's inputs folder under a stable, human-readable name
+ * (<report>_DD-MM-YYYY.<ext>) — never the browser's own (possibly reused) filename.
+ *
+ * A file already sitting at that name (the same day pulled twice) is never
+ * overwritten: it is moved into a "previous" subfolder with a timestamp first.
+ * It goes to a subfolder rather than beside the new file because the pipeline
+ * reads every .csv/.xlsx directly inside the day's folder, and an old copy
+ * next to the new one would compete with it.
+ */
+function movePortalFile(sourcePath, destDir, label, dateDmy) {
   const ext = path.extname(sourcePath) || '.csv';
-  const dest = path.join(destDir, `${label}_${dateIso}${ext}`);
-  fs.renameSync(sourcePath, dest);
+  const base = `${label}_${dateDmy}`;
+  const dest = path.join(destDir, `${base}${ext}`);
+  if (fs.existsSync(dest)) {
+    const prevDir = path.join(destDir, 'previous');
+    ensureFolder(prevDir, 'the "previous" folder for replaced downloads');
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    let archived = path.join(prevDir, `${base}_replaced-${stamp}${ext}`);
+    for (let n = 2; fs.existsSync(archived); n += 1) {
+      archived = path.join(prevDir, `${base}_replaced-${stamp}-${n}${ext}`);
+    }
+    try {
+      fs.renameSync(dest, archived);
+    } catch (err) {
+      throw new Error(`${path.basename(dest)} already exists and could not be set aside (${err.message}). Is it open in another program?`);
+    }
+  }
+  try {
+    fs.renameSync(sourcePath, dest);
+  } catch (err) {
+    throw new Error(`Could not save ${path.basename(dest)} into ${destDir}: ${err.message}`);
+  }
   return dest;
+}
+
+/** ensureDir() with a message that says which folder and why, for the operator. Reuses a folder that already exists. */
+function ensureFolder(dir, what) {
+  try {
+    return ensureDir(dir);
+  } catch (err) {
+    throw new Error(`Could not create ${what} (${dir}): ${err.message}. Check the Input Output Files folder exists and is writable.`);
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1617,7 +1654,48 @@ async function startSession(credentials, log) {
 async function closeSession(session) {
   if (!session || !session.browser) return;
   await session.browser.close().catch(() => {});
+  // browser.close() can hang up on a wedged Edge; don't leave it running after the app is gone.
+  try {
+    const proc = typeof session.browser.process === 'function' ? session.browser.process() : null;
+    if (proc && proc.exitCode === null) proc.kill();
+  } catch { /* already gone */ }
   if (session.userDataDir) try { fs.rmSync(session.userDataDir, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+/**
+ * Sign out of Amrita HIS on the portal's side, best effort, then close the
+ * session. Looks for a visible "Logout" / "Sign out" link or button on the
+ * current page and clicks it, giving up after a few seconds — the signed-in
+ * state lives in a throwaway Edge profile that closeSession() deletes, so the
+ * login is dropped locally either way, even if the portal's own control is
+ * not found. Never throws.
+ */
+async function logoutSession(session, log) {
+  if (!session || !session.browser) return { portalLoggedOut: false };
+  let portalLoggedOut = false;
+  try {
+    const attempt = (async () => {
+      const page = session.page && !session.page.isClosed() ? session.page : null;
+      if (!page) return false;
+      return page.evaluate(() => {
+        const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+        const match = /^\s*(log\s?out|sign\s?out)\s*$/i;
+        const el = [...document.querySelectorAll('a, button, [role="menuitem"]')]
+          .find((e) => visible(e) && (match.test(e.textContent || '') || match.test(e.getAttribute('title') || '')));
+        if (!el) return false;
+        el.click();
+        return true;
+      });
+    })();
+    portalLoggedOut = await Promise.race([attempt, new Promise((resolve) => setTimeout(() => resolve(false), 5000))]);
+    if (portalLoggedOut) await new Promise((resolve) => setTimeout(resolve, 1000)); // let the sign-out request leave
+  } catch { /* closing the session below is what matters */ }
+  if (log) {
+    if (portalLoggedOut) log.info('signed out of the Amrita HIS portal');
+    else log.info('no portal logout control found on this page — closing the browser session instead');
+  }
+  await closeSession(session);
+  return { portalLoggedOut };
 }
 
 /**
@@ -1649,9 +1727,9 @@ async function runReports(session, { layout }, log) {
     throw new Error(describeUnreachable(err));
   }
   await assertSessionAlive(page);
-  ensureDir(layout.dayInputsDir);
+  ensureFolder(layout.dayInputsDir, `the folder for ${layout.date.dmy}`);
   const stagingDir = path.join(layout.dayInputsDir, `.portal-download-${Date.now()}`);
-  ensureDir(stagingDir);
+  ensureFolder(stagingDir, 'the temporary download folder');
 
   try {
     // A report the portal said was empty has no file to move, and is recorded
@@ -1665,7 +1743,7 @@ async function runReports(session, { layout }, log) {
     const empty = [];
     const files = [];
     REPORT_RUNS.forEach(({ name }, i) => {
-      if (downloaded[i]) files.push(movePortalFile(downloaded[i], layout.dayInputsDir, name, layout.date.iso));
+      if (downloaded[i]) files.push(movePortalFile(downloaded[i], layout.dayInputsDir, name, layout.date.dmy));
       else empty.push(name);
     });
 
@@ -1714,7 +1792,7 @@ async function fetchDailyInputs({ layout, credentials = {}, log }) {
       throw new Error('Amrita HIS username and password are required to run the portal pull.');
     }
 
-    ensureDir(layout.dayInputsDir);
+    ensureFolder(layout.dayInputsDir, `the folder for ${layout.date.dmy}`);
     log.info(`downloads will land in ${layout.dayInputsDir}`);
 
     const session = await startSession(credentials, log);
@@ -1737,6 +1815,7 @@ module.exports = {
   fetchDailyInputs,
   startSession,
   closeSession,
+  logoutSession,
   runReports,
   isAvailable,
   REPORTS,

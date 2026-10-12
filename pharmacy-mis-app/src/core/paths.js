@@ -10,7 +10,7 @@ const path = require('path');
  *   └── 2026/
  *       └── 08-August/
  *           ├── inputs/
- *           │   └── 2026-08-08/   <- the three raw files, exactly as pulled
+ *           │   └── 08-08-2026/   <- the three raw files, exactly as pulled (DD-MM-YYYY)
  *           └── outputs/
  *               └── Master_Report_August_2026.xlsx
  *
@@ -54,6 +54,8 @@ function fromParts(year, month, day) {
     day,
     date,
     iso: `${year}-${mm}-${dd}`,
+    // DD-MM-YYYY: how the day's folder and downloaded files are named on disk.
+    dmy: `${dd}-${mm}-${year}`,
     monthName: MONTH_NAMES[month - 1],
     monthFolder: `${mm}-${MONTH_NAMES[month - 1]}`,
   };
@@ -69,7 +71,7 @@ function resolveLayout(root, dateInput) {
     root,
     monthDir,
     inputsDir,
-    dayInputsDir: path.join(inputsDir, d.iso),
+    dayInputsDir: path.join(inputsDir, d.dmy),
     outputsDir: path.join(monthDir, 'outputs'),
     masterFile: path.join(monthDir, 'outputs', `Master_Report_${d.monthName}_${d.year}.xlsx`),
   };
@@ -110,15 +112,22 @@ function formatPortalDate(input) {
   return `${String(d.day).padStart(2, '0')}/${String(d.month).padStart(2, '0')}/${d.year}`;
 }
 
-/** Pull a YYYY-MM-DD out of a folder or file name, if one is there. */
+/**
+ * Pull a date out of a folder or file name, if one is there, as YYYY-MM-DD.
+ * Understands the app's own DD-MM-YYYY names (e.g. "08-08-2026",
+ * "Pharmacy-PRQ-Details_08-08-2026.csv") as well as YYYY-MM-DD / YYYYMMDD.
+ */
 function dateFromName(name) {
-  const m = /(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})/.exec(path.basename(String(name || '')));
-  if (!m) return null;
-  try {
-    return parseReportDate(`${m[1]}-${m[2]}-${m[3]}`).iso;
-  } catch {
-    return null;
+  const base = path.basename(String(name || ''));
+  const iso = /(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})/.exec(base);
+  if (iso) {
+    try { return parseReportDate(`${iso[1]}-${iso[2]}-${iso[3]}`).iso; } catch { /* try the next form */ }
   }
+  const dmy = /(?<!\d)(\d{2})[-_.](\d{2})[-_.](\d{4})(?!\d)/.exec(base);
+  if (dmy) {
+    try { return parseReportDate(`${dmy[3]}-${dmy[2]}-${dmy[1]}`).iso; } catch { /* not a date */ }
+  }
+  return null;
 }
 
 function ensureDir(dir) {

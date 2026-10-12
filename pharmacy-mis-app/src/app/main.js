@@ -269,18 +269,21 @@ async function startGui() {
  * Lifecycle
  * ------------------------------------------------------------------ */
 
+/** Stops the server and closes any signed-in Amrita HIS browser. Resolves once the browser is closed. */
 function shutdown() {
-  if (stopServer) {
-    try { stopServer(); } catch { /* already closing */ }
-    stopServer = null;
-  }
+  if (!stopServer) return Promise.resolve();
+  const stop = stopServer;
+  stopServer = null;
+  try { return Promise.resolve(stop()); } catch { return Promise.resolve(); /* already closing */ }
 }
 
 app.on('window-all-closed', () => {
   quitting = true;
   log.info('window closed — exiting');
-  shutdown();
-  app.quit();
+  // Give Edge a moment to close cleanly, but never hold the exit up on it.
+  Promise.race([shutdown(), new Promise((resolve) => setTimeout(resolve, 2000))])
+    .catch(() => {})
+    .then(() => app.quit());
 
   // A backstop. Closing the window must end the application then and there:
   // an app that lingers in Task Manager looks broken, blocks the next launch's
@@ -291,7 +294,7 @@ app.on('window-all-closed', () => {
   setTimeout(() => {
     log.warn('still running shortly after quit — exiting the hard way');
     app.exit(0);
-  }, 2500).unref();
+  }, 4500).unref();
 });
 
 app.on('before-quit', () => { quitting = true; shutdown(); });

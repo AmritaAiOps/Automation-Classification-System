@@ -225,31 +225,11 @@ function page(token) {
   [hidden] { display: none !important; }
 
   /* ---- login card ---- */
-  .datepair { display: flex; gap: 10px; margin-bottom: 10px; align-items: stretch; min-width: 0; }
-  .datepair .box {
-    flex: 1 1 0; min-width: 0; overflow: hidden;
-    background: var(--bg-deep); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
-  }
-  .datepair .box .k { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-faint); }
-  .datepair .box .v { font: 600 15px/1.4 var(--mono); color: var(--ink); margin-top: 2px; }
-  .datepair .box.report .v { color: var(--accent); }
-  /* The one date field on the page: fetches from the portal and manual runs
-     both use it, so it lives here, next to "Reports to process", rather than
-     being a separate control a person could miss further down the form. */
-  .datepair .box.report { display: flex; flex-direction: column; padding: 5px 7px; }
-  .datepair .box.report .row {
-    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px;
-    align-items: center; min-width: 0;
-  }
-  .datepair .box.report input[type=date] {
-    flex: 1 1 145px; width: auto; min-width: 145px;
-    background: transparent; color: var(--accent);
-    border: 1px solid transparent; border-radius: 4px;
-    padding: 3px 4px; font: 600 15px/1.4 var(--mono);
-  }
-  .datepair .box.report input[type=date]:hover { border-color: var(--line); }
-  .datepair .box.report input[type=date]:focus { outline: none; border-color: var(--accent); background: #0a0f14; }
-  .datepair .box.report button.ghost.small { padding: 4px 8px; font-size: 11px; }
+  /* Header: who is signed in, and the Logout button (hidden until someone is). */
+  .session { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .session .who { font-size: 12px; color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+  button.logout { padding: 4px 12px; border-color: #5a3a3a; color: #f0b4b4; }
+  button.logout:hover:not(:disabled) { border-color: var(--err); background: #2a1c1f; }
   label.checkline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-dim); margin: 8px 0; cursor: pointer; }
   input[type=password] { width: 100%; }
   .login-status { font-size: 12px; margin-top: 8px; min-height: 16px; }
@@ -270,6 +250,10 @@ function page(token) {
   <h1>Pharmacy MIS</h1>
   <span class="sub">Daily Purchase &amp; Inventory Report</span>
   <span class="spacer"></span>
+  <div class="session" id="sessionBox" hidden>
+    <span class="who" id="sessionWho"></span>
+    <button class="logout" id="logoutBtn" title="Log out of Amrita HIS and return to the sign-in screen">Logout</button>
+  </div>
   <span class="badge off" id="scraperBadge">portal pull: checking…</span>
   <span class="badge" id="connBadge">connecting…</span>
 </header>
@@ -278,23 +262,6 @@ function page(token) {
   <div class="left">
     <section class="card" id="loginCard">
       <h2>Amrita HIS Login</h2>
-      <div class="datepair">
-        <div class="box">
-          <div class="k">Today's date</div>
-          <div class="v" id="todayDisplay">—</div>
-        </div>
-        <div class="box report">
-          <div class="k">Reports to process</div>
-          <div class="row">
-            <input type="date" id="reportDate">
-            <button id="todayBtn" class="ghost small" title="Reset to yesterday">Yesterday</button>
-          </div>
-        </div>
-      </div>
-      <p class="hint pull" id="reportDateHint">
-        Set to any date — Sign In and Run (or a manual run below) fetches or maps that day's
-        reports, not just yesterday's.
-      </p>
       <div id="loginFields">
         <label class="field">
           <span>Username</span>
@@ -314,7 +281,6 @@ function page(token) {
       <div id="runFields" hidden>
         <div class="login-status ok" id="signedInAs"></div>
         <button class="primary" id="runPortalBtn">Run</button>
-        <button class="ghost wide" id="signOutBtn">Sign out / use a different account</button>
       </div>
       <div class="login-status" id="loginStatus"></div>
       <div class="summary" id="runSummary" hidden></div>
@@ -329,7 +295,7 @@ function page(token) {
     </section>
 
     <section class="card">
-      <h2>1 · Archive root</h2>
+      <h2>1 · Input Output Files</h2>
       <label class="field">
         <span>Folder that holds (or will hold) <code>Pharmacy-MIS/</code></span>
         <div class="row">
@@ -337,7 +303,7 @@ function page(token) {
           <button id="pickRoot">Browse…</button>
         </div>
       </label>
-      <div class="paths" id="paths">Choose a root, and set the date under "Reports to process" above, to see where this run will read and write.</div>
+      <div class="paths" id="paths">Choose a folder to see where this run will read and write.</div>
     </section>
 
     <section class="card">
@@ -358,7 +324,7 @@ function page(token) {
         <p class="hint">
           Every <code>.csv</code>/<code>.xlsx</code> in the folder is read and identified by its
           <b>column layout</b>, so filenames do not matter. Left blank, the conventional
-          <code>inputs/&lt;date&gt;</code> path under the archive root is used.
+          <code>inputs/DD-MM-YYYY</code> folder under the Input Output Files folder is used.
         </p>
       </div>
 
@@ -448,7 +414,6 @@ const form = {
   read() {
     return {
       archiveRoot: $('archiveRoot').value.trim(),
-      reportDate: $('reportDate').value.trim(),
       inputFolder: mode === 'folder' ? $('inputFolder').value.trim() : '',
       files: mode === 'files' ? {
         PRQ: $('filePRQ').value.trim() || null,
@@ -622,7 +587,7 @@ function setBusy(busy) {
   pipelineBusy = busy;
   $('runPortalBtn').disabled = busy;
   $('runPortalBtn').textContent = busy ? 'Running…' : 'Run';
-  $('signOutBtn').disabled = busy;
+  $('logoutBtn').disabled = busy;
   $('signInBtn').disabled = busy || signingIn;
   $('manualModeBtn').disabled = busy;
 }
@@ -630,21 +595,25 @@ function setBusy(busy) {
 /* ---------- Amrita HIS sign-in (two steps: Sign In, then Run) ---------- */
 let signingIn = false;
 let pipelineBusy = false;
-let reportDateIso = null; // set from the server at boot — the single source of truth for "yesterday"
 let lastRunWasPortal = false; // which button started the run in flight, for the run-end handler below
 
 const setLoginStatus = (...a) => setMessage('loginStatus', 'login-status', ...a);
 
+/* Not signed in: sign-in fields shown, Logout hidden. */
 function showLoginFields() {
   $('loginFields').hidden = false;
   $('runFields').hidden = true;
+  $('sessionBox').hidden = true;
 }
 let signedInUsername = '';
+/* Signed in: Run shown, Logout (and who is signed in) visible in the header. */
 function showRunFields(username) {
   signedInUsername = username || signedInUsername;
   $('loginFields').hidden = true;
   $('runFields').hidden = false;
   $('signedInAs').textContent = '✓ Signed in as ' + signedInUsername + ' — verified';
+  $('sessionWho').textContent = signedInUsername;
+  $('sessionBox').hidden = false;
 }
 
 /**
@@ -654,10 +623,14 @@ function showRunFields(username) {
  * it, before any script runs). Once unlocked it stays unlocked for the rest
  * of this run of the app: re-authenticating for a second day's pull happens
  * through the same login card, now sitting in its normal place in the
- * sidebar, not by re-locking the whole window.
+ * sidebar, not by re-locking the whole window. The one exception is Logout,
+ * which puts the window back in its cold-launch sign-in state (lockDashboard).
  */
 function unlockDashboard() {
   document.body.classList.remove('locked');
+}
+function lockDashboard() {
+  document.body.classList.add('locked');
 }
 
 function setSigningIn(busy) {
@@ -722,8 +695,8 @@ $('signInBtn').onclick = async () => {
   const username = $('hisUsername').value.trim();
   const password = $('hisPassword').value;
 
-  // Sign In only needs credentials — archive root and report date are
-  // Dashboard settings the user has not even seen yet at this point (the
+  // Sign In only needs credentials — the input/output folder is a
+  // Dashboard setting the user has not even seen yet at this point (the
   // Dashboard is still locked), so they are chosen after signing in and read
   // fresh when Run is clicked, not asked for here.
   if (!username) { setLoginStatus('Enter your Amrita HIS username.', 'err'); return; }
@@ -766,17 +739,40 @@ $('signInBtn').onclick = async () => {
   }
 };
 
-/* Cancel a verified-but-not-yet-run sign-in, e.g. to switch accounts. */
-$('signOutBtn').onclick = async () => {
-  try { await api('/api/cancel-login'); } catch (err) { /* best effort */ }
-  showLoginFields();
-  setLoginStatus('');
+/*
+ * Logout: end the signed-in Amrita HIS account and go back to the sign-in
+ * screen so a different account can be used. The server refuses while a run is
+ * in progress (and the button is disabled then too). If the request fails the
+ * session state is re-read from the server rather than assumed.
+ */
+$('logoutBtn').onclick = async () => {
+  if (pipelineBusy) return;
+  $('logoutBtn').disabled = true;
+  $('logoutBtn').textContent = 'Logging out…';
+  try {
+    await api('/api/logout', {});
+    signedInUsername = '';
+    renderPortalSummary(null);
+    $('hisPassword').value = ''; // the remembered username, if any, stays
+    showLoginFields();
+    lockDashboard();
+    $('manualModeBtn').hidden = false;
+    setStatus('Ready.');
+    setLoginStatus('Logged out of Amrita HIS. Sign in with the same or a different account.');
+  } catch (err) {
+    setLoginStatus('✗ Could not log out: ' + err.message, 'err');
+    setStatus('Could not log out: ' + err.message, 'err');
+    await syncSignedInFields();
+  } finally {
+    $('logoutBtn').textContent = 'Logout';
+    $('logoutBtn').disabled = pipelineBusy;
+  }
 };
 
-/* Step 2: Run — pulls the three Amrita HIS reports through the session Sign In left waiting, for whichever archive root and report date are set on the Dashboard right now. */
+/* Step 2: Run — pulls the three Amrita HIS reports through the session Sign In left waiting, for whichever Input Output Files folder is set on the Dashboard right now. The report date is worked out by the app (yesterday), not typed in. */
 $('runPortalBtn').onclick = async () => {
   const archiveRoot = $('archiveRoot').value.trim();
-  if (!archiveRoot) { setStatus('Choose the archive root folder first.', 'err'); return; }
+  if (!archiveRoot) { setStatus('Choose the Input Output Files folder first.', 'err'); return; }
 
   lastRunWasPortal = true;
   setBusy(true);
@@ -791,10 +787,9 @@ $('runPortalBtn').onclick = async () => {
     // (handled in connect() below): /api/run-portal's JSON response also
     // carries an "error" field on a failed run, which api() treats as a
     // request failure, so it is not read here at all.
-    await api('/api/run-portal', {
-      archiveRoot,
-      reportDate: $('reportDate').value.trim() || reportDateIso,
-    });
+    // No date is sent: the server works out the day (yesterday) when Run is
+    // clicked, so a session left open overnight never pulls a stale date.
+    await api('/api/run-portal', { archiveRoot });
   } catch (err) {
     setBusy(false);
     setLoginStatus('✗ ' + err.message, 'err', err.docLink, err.docLinkLabel);
@@ -852,7 +847,7 @@ function connect() {
       lastRunWasPortal = false;
       if (r.ok) {
         setLoginStatus(r.signedIn
-          ? '✓ Automation completed — still signed in. Run again any time; close the Edge window to sign out.'
+          ? '✓ Automation completed — still signed in. Run again any time; use Logout to sign out.'
           : '✓ Automation completed. Sign in again to run once more.', 'ok');
         renderPortalSummary(r);
       } else {
@@ -897,17 +892,16 @@ async function refreshPaths() {
   clearTimeout(resolveTimer);
   resolveTimer = setTimeout(async () => {
     const root = $('archiveRoot').value.trim();
-    const date = $('reportDate').value.trim();
-    if (!root || !date) {
-      $('paths').textContent = 'Choose a root and a date to see where this run will read and write.';
+    if (!root) {
+      $('paths').textContent = 'Choose a folder to see where this run will read and write.';
       return;
     }
     try {
-      const l = await api('/api/resolve', { archiveRoot: root, reportDate: date });
+      const l = await api('/api/resolve', { archiveRoot: root });
       if (!l.ok) { $('paths').textContent = l.error || 'Could not resolve those paths.'; return; }
       $('paths').innerHTML =
         '<b>month</b> ' + esc(l.monthFolder) + '<br>'
-        + '<b>inputs</b> ' + esc(l.dayInputsDir) + '<br>'
+        + '<b>date folder</b> ' + esc(l.dayInputsDir) + '<br>'
         + '<b>master</b> ' + esc(l.masterFile);
     } catch (err) {
       $('paths').textContent = err.message;
@@ -916,25 +910,21 @@ async function refreshPaths() {
 }
 
 /* ---------- pickers ---------- */
-async function pick(endpoint, opts, id, useDate, announce) {
+async function pick(endpoint, opts, id) {
   try {
     const r = await api(endpoint, opts);
     if (!r.path) return;
     $(id).value = r.path;
-    if (useDate && r.dateFromName && !$('reportDate').value) {
-      $('reportDate').value = r.dateFromName;
-      if (announce) setStatus('Date ' + r.dateFromName + ' taken from the folder name.');
-    }
     form.save();
     refreshPaths();
   } catch (err) { setStatus(err.message, 'err'); }
 }
 
-$('pickRoot').onclick = () => pick('/api/pick-folder', { title: 'Select the archive root folder', initial: $('archiveRoot').value.trim() }, 'archiveRoot');
-$('pickInput').onclick = () => pick('/api/pick-folder', { title: "Select the day's inputs folder", initial: $('inputFolder').value.trim() }, 'inputFolder', true, true);
+$('pickRoot').onclick = () => pick('/api/pick-folder', { title: 'Select the Input Output Files folder', initial: $('archiveRoot').value.trim() }, 'archiveRoot');
+$('pickInput').onclick = () => pick('/api/pick-folder', { title: "Select the day's inputs folder", initial: $('inputFolder').value.trim() }, 'inputFolder');
 document.querySelectorAll('button[data-pick]').forEach((btn) => {
   const slot = btn.dataset.pick;
-  btn.onclick = () => pick('/api/pick-file', { title: 'Select the ' + slot + ' file' }, 'file' + slot, true);
+  btn.onclick = () => pick('/api/pick-file', { title: 'Select the ' + slot + ' file' }, 'file' + slot);
 });
 
 $('openMaster').onclick = async () => {
@@ -944,18 +934,11 @@ $('showMaster').onclick = async () => {
   try { await api('/api/reveal', { path: lastMaster }); } catch (err) { setStatus(err.message, 'err'); }
 };
 
-$('todayBtn').onclick = () => {
-  // "Yesterday" — the previous CALENDAR day, computed once by the server
-  // (core/paths.js getPreviousCalendarDay) and reused everywhere: this field,
-  // the Amrita HIS date filters, and the inputs folder all agree with it.
-  if (reportDateIso) { $('reportDate').value = reportDateIso; refreshPaths(); }
-};
-
 /* ---------- run ---------- */
+/* The report date is not asked for: the server takes it from the inputs folder / file names (e.g. 08-08-2026), else yesterday. */
 $('runBtn').onclick = async () => {
   const payload = form.read();
-  if (!payload.archiveRoot) { setStatus('Choose the archive root folder first.', 'err'); return; }
-  if (!payload.reportDate) { setStatus('Set the report date first.', 'err'); return; }
+  if (!payload.archiveRoot) { setStatus('Choose the Input Output Files folder first.', 'err'); return; }
   form.save();
   lastRunWasPortal = false;
   renderPortalSummary(null);
@@ -972,7 +955,7 @@ $('runBtn').onclick = async () => {
   }
 };
 
-['archiveRoot', 'reportDate'].forEach((id) => { $(id).oninput = () => { form.save(); refreshPaths(); }; });
+$('archiveRoot').oninput = () => { form.save(); refreshPaths(); };
 ['inputFolder', 'filePRQ', 'filePO', 'fileGRN'].forEach((id) => { $(id).oninput = form.save; });
 
 /* ---------- boot ---------- */
@@ -981,13 +964,8 @@ $('runBtn').onclick = async () => {
   clearLoginFields();
   try {
     const s = await api('/api/status');
-    reportDateIso = s.reportDate;
-    $('todayDisplay').textContent = s.todayDisplay;
-
     form.apply(s.settings);
     prefillUsername(s.settings.username);
-
-    if (!$('reportDate').value) { $('reportDate').value = s.reportDate; }
 
     // A window reload while a Sign In had already succeeded (but Run had not
     // been clicked yet) should still show the waiting session rather than a

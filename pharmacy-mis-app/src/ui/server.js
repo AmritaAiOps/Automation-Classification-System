@@ -214,6 +214,27 @@ const routes = {
     }
   },
 
+  /**
+   * The Logout button: sign the current Amrita HIS account out, close its
+   * browser, and forget the session so a different account can sign in.
+   * Refused mid-run — closing the browser under a running pull would only
+   * produce a confusing failure.
+   */
+  async 'POST /api/logout'() {
+    if (runInFlight) throw new Error('A run is in progress — wait for it to finish before logging out.');
+    if (!portalSession.isActive()) return { ok: true, wasSignedIn: false };
+    const username = portalSession.activeUsername();
+    try {
+      await portalSession.logout(makeLogger((entry) => broadcast('log', entry)));
+    } catch (err) {
+      // The session is already detached; the worst case is a browser that
+      // would not close, which closing the app cleans up.
+      log.warn('Amrita HIS logout did not complete cleanly: ' + errMessage(err));
+    }
+    log.info('logged out of Amrita HIS' + (username ? ` (${username})` : ''));
+    return { ok: true, wasSignedIn: true };
+  },
+
   /** Cancel a signed-in-but-not-yet-run session — "Try Again" before Run was clicked, or switching accounts. */
   async 'POST /api/cancel-login'() {
     await portalSession.clear();
@@ -297,9 +318,10 @@ const routes = {
    * show the resolved paths before anything is run.
    */
   async 'POST /api/resolve'(body) {
-    if (!body.archiveRoot || !body.reportDate) return { ok: false };
+    if (!body.archiveRoot) return { ok: false };
     try {
-      const l = resolveLayout(body.archiveRoot, body.reportDate);
+      // No date field any more: the day is yesterday unless a caller says otherwise.
+      const l = resolveLayout(body.archiveRoot, body.reportDate || getPreviousCalendarDay().iso);
       return {
         ok: true,
         monthDir: l.monthDir,
@@ -420,10 +442,9 @@ function createServer() {
    * socket still lingering destroyed.
    */
   function shutdown() {
-    // Best-effort: don't leave a signed-in Chromium running after the window
-    // closes. Not awaited — shutdown() itself is synchronous, and app.exit()
-    // is about to tear the process down regardless.
-    portalSession.clear().catch(() => {});
+    // Don't leave a signed-in Edge running after the app closes. The caller
+    // (app/main.js) waits on the returned promise, briefly, before quitting.
+    const sessionClosed = portalSession.clear().catch(() => {});
     for (const res of streams) {
       try { res.end(); } catch { /* already gone */ }
       try { res.destroy(); } catch { /* already gone */ }
@@ -434,6 +455,7 @@ function createServer() {
     if (typeof server.closeAllConnections === 'function') {
       try { server.closeAllConnections(); } catch { /* nothing to close */ }
     }
+    return sessionClosed;
   }
 
   return { server, shutdown };
