@@ -39,22 +39,6 @@ class Logger {
     this.indent += 1;
     return () => { this.indent = Math.max(0, this.indent - 1); };
   }
-
-  /** Run fn inside a step, closing the indent even if fn throws. */
-  async during(message, fn) {
-    const close = this.step(message);
-    try {
-      return await fn();
-    } finally {
-      close();
-    }
-  }
-
-  toText() {
-    return this.entries
-      .map((e) => `${e.ts}  ${e.level.toUpperCase().padEnd(5)}  ${'  '.repeat(e.indent)}${e.message}`)
-      .join('\n');
-  }
 }
 
 module.exports = { Logger };

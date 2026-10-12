@@ -87,25 +87,18 @@ async function execute(options, log) {
   const fields = { C: null, D: null, E: null, F: null, G: null, H: null, I: null, J: null };
   const audit = {};
 
-  if (identified.byKind.PRQ) {
-    const close = log.step(`PRQ section -> columns C, D  [${path.basename(identified.byKind.PRQ.file)}]`);
-    const r = mapPrq(identified.byKind.PRQ.sheet, log);
-    Object.assign(fields, { C: r.C, D: r.D });
-    audit.PRQ = r.audit;
-    close();
-  }
-  if (identified.byKind.PO) {
-    const close = log.step(`PO section -> columns E, F, G  [${path.basename(identified.byKind.PO.file)}]`);
-    const r = mapPo(identified.byKind.PO.sheet, log);
-    Object.assign(fields, { E: r.E, F: r.F, G: r.G });
-    audit.PO = r.audit;
-    close();
-  }
-  if (identified.byKind.GRN) {
-    const close = log.step(`GRN section -> columns H, I, J  [${path.basename(identified.byKind.GRN.file)}]`);
-    const r = mapGrn(identified.byKind.GRN.sheet, log);
-    Object.assign(fields, { H: r.H, I: r.I, J: r.J });
-    audit.GRN = r.audit;
+  const sections = [
+    ['PRQ', 'C, D', mapPrq, ['C', 'D']],
+    ['PO', 'E, F, G', mapPo, ['E', 'F', 'G']],
+    ['GRN', 'H, I, J', mapGrn, ['H', 'I', 'J']],
+  ];
+  for (const [kind, cols, map, keys] of sections) {
+    const hit = identified.byKind[kind];
+    if (!hit) continue;
+    const close = log.step(`${kind} section -> columns ${cols}  [${path.basename(hit.file)}]`);
+    const r = map(hit.sheet, log);
+    for (const k of keys) fields[k] = r[k];
+    audit[kind] = r.audit;
     close();
   }
   closeStep();
@@ -137,17 +130,8 @@ async function execute(options, log) {
 const COLUMNS_FOR = { PRQ: 'C-D', PO: 'E-G', GRN: 'H-J' };
 
 /**
- * The report date, in order of preference: what the user typed, then the date
- * embedded in the inputs folder name, then the date on the source filenames.
- * Nothing falls back to "today" silently - a wrong date writes the wrong row.
- */
-/**
- * What the source files themselves look like they are for — the inputs folder's
- * name, the names of the files picked by hand, and the names of the files
- * inside the folder being scanned.
- *
- * Every date found, not just the first: a folder holding a mix of days is worth
- * saying out loud rather than silently taking whichever came back first.
+ * Dates implied by the inputs folder name, hand-picked filenames and filenames
+ * inside the scanned folder. Collects every date, so a mixed-day folder is reported.
  */
 function inferDateFromNames(options) {
   const found = [];
@@ -159,9 +143,7 @@ function inferDateFromNames(options) {
   for (const p of Object.values(options.files || {})) {
     if (p) note(dateFromName(p), `the filename "${path.basename(p)}"`);
   }
-  // The files inside a scanned folder count too. Without this, the commonest
-  // case of all — a folder of files named after the day they cover, picked
-  // whole — has nothing to compare the date field against.
+  // Files inside a scanned folder count too (the commonest case).
   if (options.inputFolder && fs.existsSync(options.inputFolder)) {
     try {
       for (const name of fs.readdirSync(options.inputFolder)) {
@@ -176,6 +158,11 @@ function inferDateFromNames(options) {
   return { ...found[0], distinct };
 }
 
+/**
+ * The report date, in order of preference: what the user typed, then the date
+ * embedded in the inputs folder name, then the date on the source filenames.
+ * Nothing falls back to "today" silently - a wrong date writes the wrong row.
+ */
 function resolveDate(options, log) {
   const inferred = inferDateFromNames(options);
 

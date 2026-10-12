@@ -18,8 +18,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const ExcelJS = require('exceljs');
+const { readSubsystem, powershell } = require('./build');
 
 const ROOT = path.join(__dirname, '..');
 const EXE = path.join(ROOT, 'dist', 'Pharmacy-MIS.exe');
@@ -52,25 +53,6 @@ function runExe(exe, args, opts = {}) {
     env: opts.env || process.env,
   });
   return { code: res.status, out: (res.stdout || '') + (res.stderr || ''), error: res.error };
-}
-
-/**
- * Run a PowerShell snippet and return its stdout.
- *
- * spawnSync rather than execFileSync, and the exit code is deliberately
- * ignored: PowerShell reports a non-zero exit whenever the last command set
- * $? to false — which Get-Process does even under -ErrorAction
- * SilentlyContinue, for instance when it cannot open some unrelated process on
- * the machine. Treating that as a failure made this check report "no window
- * appeared" while the window was plainly there.
- */
-function powershell(script) {
-  const res = spawnSync(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='SilentlyContinue';" + script],
-    { encoding: 'utf8', timeout: 120000 },
-  );
-  return String(res.stdout || '').trim();
 }
 
 async function main() {
@@ -193,14 +175,13 @@ async function main() {
   check('the file that is not a report was skipped',
     (result.unidentified || []).some((u) => /notes\.csv/.test(u.file)));
 
-  for (const [field, want] of Object.entries(EXPECTED)) {
-    check('column ' + field + ' = ' + want, Number(result.fields[field]) === want, 'got ' + result.fields[field]);
-  }
-
   /* ---------------------------------------------------------------- *
    * 5. the workbook it produced
    * ---------------------------------------------------------------- */
   section('5 · The generated master workbook');
+  // Cell-level figures, formats and update/append/rollover are asserted by
+  // tools/selftest.js on the same code; the exe's --self-test (section 3)
+  // already checks every figure. Only exe-specific checks stay here.
 
   const master = result.layout.masterFile;
   check('master workbook written where expected',
@@ -212,15 +193,6 @@ async function main() {
   await wb.xlsx.readFile(master);
   const ws = wb.getWorksheet('Daily Report');
   if (check('the "Daily Report" sheet is there', !!ws)) {
-    check('title band preserved', ws.getCell('A1').value === 'Daily Purchase & Inventory MIS Report');
-    check('headers preserved', ws.getCell('C2').value === 'Total no of PRQ');
-    check('column widths preserved', Math.round(ws.getColumn(3).width) === 15);
-    check('borders preserved on the data row', !!(ws.getCell('C3').border || {}).bottom);
-    check('money number format on G', ws.getCell('G3').numFmt === '#,##0.00');
-    check('money number format on J', ws.getCell('J3').numFmt === '#,##0.00');
-    check('S.No written', ws.getCell('A3').value === 1);
-    check('figures landed in C..J',
-      ws.getCell('C3').value === 21 && ws.getCell('J3').value === 2656763.31);
     // Compared against the reference workbook rather than assumed to be
     // non-empty: the reference has no merges today, and the check should fail
     // if a future reference gains some and the writer drops them.
@@ -234,29 +206,9 @@ async function main() {
   check('Monthly Summary sheet preserved', !!wb.getWorksheet('Monthly Summary'));
 
   /* ---------------------------------------------------------------- *
-   * 6. update, append, rollover — through the exe
+   * 6. error handling
    * ---------------------------------------------------------------- */
-  section('6 · Update in place, append, and month rollover');
-
-  const again = runJson(customerExe, archiveDir, inputsDir, '2026-08-08', scratch, 'again.json');
-  check('re-running the same date updates in place',
-    again.ok && again.write.mode === 'updated' && again.write.totalRows === 1,
-    again.write && again.write.mode);
-
-  const next = runJson(customerExe, archiveDir, inputsDir, '2026-08-09', scratch, 'next.json');
-  check('a second date appends', next.ok && next.write.mode === 'appended' && next.write.totalRows === 2);
-  check('both dates share one monthly file', next.layout.masterFile === master);
-
-  const sept = runJson(customerExe, archiveDir, inputsDir, '2026-09-01', scratch, 'sept.json');
-  check('a new month creates a new workbook', sept.ok && sept.write.created === true);
-  check('the new month starts at the first data row', sept.write.row === 3);
-  check('the new month gets its own file',
-    path.basename(sept.layout.masterFile) === 'Master_Report_September_2026.xlsx');
-
-  /* ---------------------------------------------------------------- *
-   * 7. error handling
-   * ---------------------------------------------------------------- */
-  section('7 · Error handling');
+  section('6 · Error handling');
 
   const noRoot = runExe(customerExe, ['--cli', '--inputs', inputsDir], { cwd: customerDir });
   check('a missing --root is refused with an explanation',
@@ -294,9 +246,9 @@ async function main() {
   check('the PO and GRN columns are left alone', partial.fields.E === null && partial.fields.H === null);
 
   /* ---------------------------------------------------------------- *
-   * 8. independence from the machine it was built on
+   * 7. independence from the machine it was built on
    * ---------------------------------------------------------------- */
-  section('8 · Independence from the developer machine');
+  section('7 · Independence from the developer machine');
 
   // Different working directories, including a couple of real user folders.
   const home = os.homedir();
@@ -342,15 +294,15 @@ async function main() {
     fs.readdirSync(customerDir).join(', '));
 
   /* ---------------------------------------------------------------- *
-   * 9. the window
+   * 8. the window
    * ---------------------------------------------------------------- */
-  section('9 · The application window');
+  section('8 · The application window');
   await guiCheck(customerExe);
 
   /* ---------------------------------------------------------------- *
-   * 10. logs
+   * 9. logs
    * ---------------------------------------------------------------- */
-  section('10 · Logging');
+  section('9 · Logging');
   const logDir = path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'PharmacyMIS', 'logs');
   check('the application keeps logs in the user profile', fs.existsSync(logDir), logDir);
   if (fs.existsSync(logDir)) {
@@ -362,9 +314,9 @@ async function main() {
   }
 
   /* ---------------------------------------------------------------- *
-   * 11. failures reach somewhere the customer can find
+   * 10. failures reach somewhere the customer can find
    * ---------------------------------------------------------------- */
-  section('11 · Failures are written where the customer can find them');
+  section('10 · Failures are written where the customer can find them');
 
   // %LOCALAPPDATA% is hidden and means nothing to a pharmacy user, so every
   // failure is mirrored into Documents. This proves it happens for a real
@@ -410,20 +362,6 @@ function runJson(exe, root, inputs, date, scratch, name) {
   const out = path.join(scratch, name);
   runExe(exe, ['--cli', '--root', root, '--inputs', inputs, '--date', date, '--out', out]);
   try { return JSON.parse(fs.readFileSync(out, 'utf8')); } catch { return { ok: false, error: 'no result file' }; }
-}
-
-function readSubsystem(file) {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const head = Buffer.alloc(0x40);
-    fs.readSync(fd, head, 0, head.length, 0);
-    const pe = head.readUInt32LE(0x3c);
-    const opt = Buffer.alloc(72);
-    fs.readSync(fd, opt, 0, opt.length, pe + 4 + 20);
-    return opt.readUInt16LE(68);
-  } finally {
-    fs.closeSync(fd);
-  }
 }
 
 /**

@@ -91,13 +91,12 @@ function resolveLayout(root, dateInput) {
  * "yesterday" independently.
  */
 function getPreviousCalendarDay(reference = new Date()) {
-  const prev = new Date(reference.getFullYear(), reference.getMonth(), reference.getDate() - 1);
-  return fromParts(prev.getFullYear(), prev.getMonth() + 1, prev.getDate());
+  return fromDate(new Date(reference.getFullYear(), reference.getMonth(), reference.getDate() - 1));
 }
 
 /** Today, in the same shape as parseReportDate()/getPreviousCalendarDay(). */
 function getToday(reference = new Date()) {
-  return fromParts(reference.getFullYear(), reference.getMonth() + 1, reference.getDate());
+  return fromDate(reference);
 }
 
 /**
@@ -132,7 +131,6 @@ module.exports = {
   parseReportDate,
   dateFromName,
   ensureDir,
-  MONTH_NAMES,
   getPreviousCalendarDay,
   getToday,
   formatPortalDate,

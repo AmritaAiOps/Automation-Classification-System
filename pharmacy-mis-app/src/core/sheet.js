@@ -64,8 +64,7 @@ function findHeaderRowIndex(rows, lookahead = 10) {
     const cells = (rows[r] || []).filter((c) => c !== '' && c != null);
     if (cells.length < 3) continue;
     const textual = cells.filter((c) => typeof c === 'string' && !/^-?[\d,.\s]+$/.test(c)).length;
-    const score = textual;
-    if (textual >= 3 && score > bestScore) { bestScore = score; best = r; }
+    if (textual >= 3 && textual > bestScore) { bestScore = textual; best = r; }
   }
   return best === -1 ? 0 : best;
 }

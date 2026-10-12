@@ -19,17 +19,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { powershell } = require('./build');
 
 const EXE = path.join(__dirname, '..', 'dist', 'Pharmacy-MIS.exe');
-
-function powershell(script) {
-  const res = require('child_process').spawnSync(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='SilentlyContinue';" + script],
-    { encoding: 'utf8', timeout: 60000 },
-  );
-  return String(res.stdout || '').trim();
-}
 
 const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 

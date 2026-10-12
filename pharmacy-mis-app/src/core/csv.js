@@ -7,13 +7,9 @@
  * survive parsing intact.
  */
 
-function stripBom(text) {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-}
-
 /** Parse CSV text into an array of row arrays. */
 function parseCsv(text) {
-  const src = stripBom(text);
+  const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   const rows = [];
   let row = [];
   let field = '';

@@ -39,7 +39,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFileSync, spawn, spawnSync } = require('child_process');
 
-const { findCsc, packFolder, TRAILER_MAGIC } = require('./build.js');
+const { findCsc, zipFolder, appendPayload } = require('./build.js');
 
 const LAUNCHER = path.join(__dirname, 'launcher');
 const INNER_EXE = 'Pharmacy MIS.exe';
@@ -99,10 +99,6 @@ internal static class UnpackCheck
 
 /**
  * A stand-in for the application: an inner exe and one bulk file.
- *
- * The bulk file is padded to a few hundred kilobytes because LZMS is asked to
- * compress into a buffer the size of its input, and a handful of bytes
- * compresses to more than it started as.
  */
 function buildPayloadFolder(dir) {
   fs.mkdirSync(path.join(dir, 'resources'), { recursive: true });
@@ -120,16 +116,8 @@ const PAYLOAD_BODY = 'stand-in payload\n'.repeat(16384);
 function buildCheckExe(work, csc) {
   const payloadSource = path.join(work, 'payload');
   buildPayloadFolder(payloadSource);
-  const { raw } = packFolder(payloadSource);
-
-  const rawFile = path.join(work, 'app.raw');
-  const payloadFile = path.join(work, 'app.lzms');
-  fs.writeFileSync(rawFile, raw);
-
-  const packExe = path.join(work, 'Pack.exe');
-  execFileSync(csc, ['-nologo', '-optimize+', '-platform:x64', '-out:' + packExe, path.join(LAUNCHER, 'Pack.cs')],
-    { stdio: 'pipe' });
-  execFileSync(packExe, [rawFile, payloadFile], { stdio: 'pipe' });
+  const payloadFile = path.join(work, 'app.zip');
+  zipFolder(payloadSource, payloadFile);
 
   const payload = fs.readFileSync(payloadFile);
   const payloadHash = crypto.createHash('sha256').update(payload).digest('hex');
@@ -152,15 +140,11 @@ function buildCheckExe(work, csc) {
   const exe = path.join(work, 'UnpackCheck.exe');
   execFileSync(csc, [
     '-nologo', '-platform:x64', '-target:exe', '-main:UnpackCheck', '-out:' + exe,
+    '-r:System.IO.Compression.dll', '-r:System.IO.Compression.FileSystem.dll',
     path.join(LAUNCHER, 'Launcher.cs'), buildInfo, harness,
   ], { stdio: 'pipe' });
 
-  const trailer = Buffer.alloc(24);
-  trailer.writeBigUInt64LE(BigInt(payload.length), 0);
-  trailer.writeBigUInt64LE(BigInt(raw.length), 8);
-  trailer.write(TRAILER_MAGIC, 16, 'ascii');
-  fs.appendFileSync(exe, payload);
-  fs.appendFileSync(exe, trailer);
+  appendPayload(exe, payload);
 
   return { exe, runtimeName: '0.0.0-check-' + payloadHash.slice(0, RUNTIME_NAME_LENGTH) };
 }

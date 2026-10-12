@@ -19,15 +19,19 @@ const { appDir } = require('./appdata');
  * app closed. Settings that have to outlive a launch cannot live there.
  *
  * One small JSON file under the app's own writable folder
- * (%LOCALAPPDATA%\PharmacyMIS\, see core/appdata.js), for the same reason
- * core/credentials.js keeps the username there: it survives the port changing,
- * and the CLI and the GUI see the same value.
+ * (%LOCALAPPDATA%\PharmacyMIS\, see core/appdata.js): it survives the port
+ * changing, and the CLI and the GUI see the same value.
  *
- * Nothing secret belongs in here — it holds paths, not credentials.
+ * It also remembers the Amrita HIS USERNAME, and only the username.
+ * REMEMBER USERNAME = YES, REMEMBER PASSWORD = NO. The password is not a
+ * parameter anywhere in this module, so there is no path through this file
+ * that could persist it, plain text or otherwise. It lives only in memory for
+ * the current sign-in and is handed straight to Puppeteer; see
+ * src/scraper/index.js.
  */
 
 /** The keys worth carrying across launches, and the only ones accepted from the page. */
-const KEYS = ['archiveRoot', 'inputFolder', 'filePRQ', 'filePO', 'fileGRN', 'mode'];
+const KEYS = ['archiveRoot', 'inputFolder', 'filePRQ', 'filePO', 'fileGRN', 'mode', 'username'];
 
 function settingsFile() {
   return path.join(appDir(), 'settings.json');
@@ -51,7 +55,18 @@ function loadSettings() {
  * file stays what this module says it is.
  */
 function saveSettings(values) {
-  const merged = { ...loadSettings(), ...pick(values) };
+  return write({ ...loadSettings(), ...pick(values) });
+}
+
+/** Remember the username for next time, or forget it when blank — "Remember username" unchecked. */
+function rememberUsername(username) {
+  const merged = loadSettings();
+  const value = String(username || '').trim();
+  if (value) merged.username = value; else delete merged.username;
+  return write(merged);
+}
+
+function write(merged) {
   try {
     fs.writeFileSync(settingsFile(), JSON.stringify(merged, null, 2), 'utf8');
   } catch { /* not remembering the settings is not fatal */ }
@@ -69,4 +84,4 @@ function pick(source) {
   return out;
 }
 
-module.exports = { loadSettings, saveSettings, KEYS };
+module.exports = { loadSettings, saveSettings, rememberUsername, KEYS };

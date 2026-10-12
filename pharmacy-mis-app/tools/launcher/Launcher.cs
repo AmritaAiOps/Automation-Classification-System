@@ -14,12 +14,11 @@
 // spawn. Rewriting it against components Windows already has takes the release
 // from 176 MB to about 91 MB.
 //
-// It relies on two in-box Windows components:
+// It relies on one in-box Windows component:
 //   .NET Framework 4.x   present and non-removable on Windows 10 1903+ and 11
-//   cabinet.dll          the Compression API, present since Windows 8
-// Neither is something the customer installs. LZMS, from that API, compresses
-// this payload to 90 MB where Deflate — the only thing .NET Framework offers
-// natively — manages 104 MB.
+// Its System.IO.Compression reads the Deflate zip the build appends. (The
+// payload used to be LZMS through cabinet.dll, 14 MB smaller but with a
+// hand-rolled archive format and a second compressor to maintain.)
 //
 // WHY NOT electron-builder's "portable" TARGET
 // --------------------------------------------
@@ -44,6 +43,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -62,29 +62,13 @@ internal static class Launcher
     // Written at the very end of the exe by tools/build.js, so the launcher can
     // find its own payload without knowing anything about PE layout.
     //
-    // The bytes are "PHMISPL1"; read little-endian that is the value below.
+    // The bytes are "PHMISPZ1"; read little-endian that is the value below.
     // No digit separators: the compiler used for this file is csc.exe from the
     // in-box .NET Framework, which is a C# 5 compiler. Everything here has to
     // stay within C# 5, because the whole point of using it is that it is
     // already on the machine and needs no SDK installed.
-    private const ulong TrailerMagic = 0x314C5053494D4850UL;
-    private const int TrailerBytes = 24;
-
-    /* ---------------------------------------------------------------- *
-     * Windows Compression API (cabinet.dll) — in-box since Windows 8
-     * ---------------------------------------------------------------- */
-
-    private const uint CompressAlgorithmLzms = 5;
-
-    [DllImport("cabinet.dll", SetLastError = true)]
-    private static extern bool CreateDecompressor(uint algorithm, IntPtr allocRoutines, out IntPtr handle);
-
-    [DllImport("cabinet.dll", SetLastError = true)]
-    private static extern bool Decompress(
-        IntPtr handle, byte[] input, IntPtr inputSize, byte[] output, IntPtr outputSize, out IntPtr used);
-
-    [DllImport("cabinet.dll", SetLastError = true)]
-    private static extern bool CloseDecompressor(IntPtr handle);
+    private const ulong TrailerMagic = 0x315A5053494D4850UL;
+    private const int TrailerBytes = 16;
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr owner, string text, string caption, uint type);
@@ -346,8 +330,8 @@ internal static class Launcher
      * ---------------------------------------------------------------- */
 
     /// <summary>
-    /// The compressed application, read out of the tail of this exe. The
-    /// trailer is 24 bytes: compressed length, uncompressed length, magic.
+    /// The zipped application, read out of the tail of this exe. The trailer
+    /// is 16 bytes: payload length, magic.
     /// </summary>
     private static byte[] ReadPayload()
     {
@@ -367,29 +351,28 @@ internal static class Launcher
             }
 
             fs.Seek(trailerAt, SeekOrigin.Begin);
-            long compressedLength = reader.ReadInt64();
-            long rawLength = reader.ReadInt64();
+            long payloadLength = reader.ReadInt64();
 
-            if (compressedLength <= 0 || compressedLength > trailerAt || rawLength <= 0)
+            if (payloadLength <= 0 || payloadLength > trailerAt)
             {
                 throw new InvalidDataException("The application payload is corrupt.");
             }
 
-            fs.Seek(trailerAt - compressedLength, SeekOrigin.Begin);
-            var compressed = reader.ReadBytes((int)compressedLength);
-            if (compressed.Length != compressedLength)
+            fs.Seek(trailerAt - payloadLength, SeekOrigin.Begin);
+            var payload = reader.ReadBytes((int)payloadLength);
+            if (payload.Length != payloadLength)
             {
                 throw new InvalidDataException("The application payload is truncated.");
             }
 
-            return Decompressed(compressed, (int)rawLength);
+            return payload;
         }
     }
 
     /// <summary>
     /// Find the payload trailer, searching backwards from the end of the file.
     ///
-    /// It is normally the last 24 bytes. It is not searched for at a fixed
+    /// It is normally the last 16 bytes. It is not searched for at a fixed
     /// offset because signing the release moves it: signtool appends the
     /// Authenticode certificate to the end of the file, leaving the trailer a
     /// few kilobytes short of it. Scanning back means the exe works whether it
@@ -409,126 +392,20 @@ internal static class Launcher
         {
             if (BitConverter.ToUInt64(tail, i) != TrailerMagic) continue;
             long magicAt = tailStart + i;
-            long trailerAt = magicAt - 16;
+            long trailerAt = magicAt - 8;
             if (trailerAt >= 0) return trailerAt;
         }
         return -1;
     }
 
-    private static byte[] Decompressed(byte[] compressed, int rawLength)
+    private static int UnpackTo(byte[] payload, string target)
     {
-        IntPtr handle;
-        if (!CreateDecompressor(CompressAlgorithmLzms, IntPtr.Zero, out handle))
+        using (var zip = new ZipArchive(new MemoryStream(payload), ZipArchiveMode.Read))
         {
-            throw new Win32Exception(
-                "Windows would not start its decompressor (cabinet.dll). Error "
-                + Marshal.GetLastWin32Error() + ".");
+            if (zip.Entries.Count == 0) throw new InvalidDataException("The application payload is empty.");
+            zip.ExtractToDirectory(target);
+            return zip.Entries.Count;
         }
-
-        try
-        {
-            var raw = new byte[rawLength];
-            IntPtr used;
-            if (!Decompress(handle, compressed, (IntPtr)compressed.Length, raw, (IntPtr)raw.Length, out used))
-            {
-                throw new InvalidDataException(
-                    "The application payload could not be decompressed (Windows error "
-                    + Marshal.GetLastWin32Error() + "). The file is most likely damaged.");
-            }
-            if ((long)used != rawLength)
-            {
-                throw new InvalidDataException("The application payload decompressed to the wrong size.");
-            }
-            return raw;
-        }
-        finally
-        {
-            CloseDecompressor(handle);
-        }
-    }
-
-    /// <summary>
-    /// The archive format is deliberately trivial — a 4-byte header length, a
-    /// UTF-8 index, then every file's bytes end to end — because a format with
-    /// no library behind it is a format that cannot go wrong at the customer's
-    /// end. The index is read without a JSON parser for the same reason.
-    /// </summary>
-    private static int UnpackTo(byte[] raw, string target)
-    {
-        int headerLength = BitConverter.ToInt32(raw, 0);
-        var index = Encoding.UTF8.GetString(raw, 4, headerLength);
-        int bodyStart = 4 + headerLength;
-
-        int written = 0;
-        foreach (var entry in ParseIndex(index))
-        {
-            var full = Path.Combine(target, entry.Path.Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(full));
-            using (var fs = new FileStream(full, FileMode.Create, FileAccess.Write, FileShare.None))
-            {
-                fs.Write(raw, bodyStart + (int)entry.Offset, (int)entry.Length);
-            }
-            written++;
-        }
-        return written;
-    }
-
-    private struct Entry
-    {
-        public string Path;
-        public long Offset;
-        public long Length;
-    }
-
-    /// <summary>
-    /// Reads the {"files":[{"p":..,"o":..,"l":..}],"dirs":[..]} index the build
-    /// writes. Only the file entries matter — every directory is created from
-    /// its file's path anyway — so this is a small scanner rather than a
-    /// dependency on a JSON library.
-    /// </summary>
-    private static List<Entry> ParseIndex(string json)
-    {
-        var entries = new List<Entry>();
-        int i = 0;
-        while (true)
-        {
-            int p = json.IndexOf("\"p\":\"", i, StringComparison.Ordinal);
-            if (p < 0) break;
-            p += 5;
-            int end = json.IndexOf('"', p);
-            if (end < 0) break;
-            var raw = json.Substring(p, end - p);
-
-            int o = json.IndexOf("\"o\":", end, StringComparison.Ordinal);
-            int l = json.IndexOf("\"l\":", end, StringComparison.Ordinal);
-            if (o < 0 || l < 0) break;
-
-            entries.Add(new Entry
-            {
-                Path = Unescape(raw),
-                Offset = ReadNumber(json, o + 4),
-                Length = ReadNumber(json, l + 4),
-            });
-            i = l + 4;
-        }
-        if (entries.Count == 0) throw new InvalidDataException("The application payload has an empty file index.");
-        return entries;
-    }
-
-    private static string Unescape(string s)
-    {
-        return s.Replace("\\\\", "\\").Replace("\\\"", "\"").Replace("\\/", "/");
-    }
-
-    private static long ReadNumber(string s, int at)
-    {
-        long value = 0;
-        while (at < s.Length && s[at] >= '0' && s[at] <= '9')
-        {
-            value = (value * 10) + (s[at] - '0');
-            at++;
-        }
-        return value;
     }
 
     /* ---------------------------------------------------------------- *
@@ -562,11 +439,6 @@ internal static class Launcher
     // longer, at the unpack step only. Keep the marks and their suffixes brief.
     private const string StagingMark = ".tmp-";
     private const string StaleMark = ".old-";
-
-    // What those two were called before they were shortened. A machine that ran
-    // an earlier build can still have folders under these names.
-    private const string LegacyStagingMark = ".unpacking-";
-    private const string LegacyStaleMark = ".stale-";
 
     private static string RuntimeRoot()
     {
@@ -798,20 +670,17 @@ internal static class Launcher
     }
 
     /// <summary>
-    /// True for a folder name this or any earlier launcher used as scratch. The
-    /// retired marks are still listed because a machine that ran an older build
-    /// can have folders under the old names, and they earn the same protection
-    /// from being deleted while a launcher may still be writing into them.
+    /// True for a folder name this launcher uses as scratch.
     /// </summary>
     private static bool IsScratchName(string name)
     {
-        return IsStaleName(name) || HasMark(name, StagingMark) || HasMark(name, LegacyStagingMark);
+        return IsStaleName(name) || HasMark(name, StagingMark);
     }
 
-    /// <summary>True for a folder already renamed aside, under either the current or the retired mark.</summary>
+    /// <summary>True for a folder already renamed aside..</summary>
     private static bool IsStaleName(string name)
     {
-        return HasMark(name, StaleMark) || HasMark(name, LegacyStaleMark);
+        return HasMark(name, StaleMark);
     }
 
     private static bool HasMark(string name, string mark)
@@ -963,10 +832,4 @@ internal static class Launcher
         }
         return sb.Append('"').ToString();
     }
-}
-
-/// <summary>A Win32 failure with a message written for the person reading it.</summary>
-internal sealed class Win32Exception : Exception
-{
-    public Win32Exception(string message) : base(message) { }
 }

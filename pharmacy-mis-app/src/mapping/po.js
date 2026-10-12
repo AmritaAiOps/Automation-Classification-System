@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  isAutoPrq, hasLetterSuffix, countDistinct, dataRows, findTotalsRow, parseAmount, clean,
+  isAutoPrq, hasLetterSuffix, countDistinct, dataRows, findTotalsRow, dropWhere, totalOrWarn,
 } = require('./rules');
 
 /**
@@ -25,31 +25,22 @@ function mapPo(sheet, log) {
   const all = dataRows(sheet.records, idFields);
   log.info(`${all.length} PO line rows read`);
 
-  const afterAuto = [];
-  const droppedAuto = new Set();
-  for (const rec of all) {
-    if (isAutoPrq(rec['prq no'])) { droppedAuto.add(clean(rec['prq no'])); continue; }
-    afterAuto.push(rec);
-  }
-  if (droppedAuto.size) {
+  const auto = dropWhere(all, isAutoPrq, 'prq no');
+  if (auto.dropped) {
     log.info(
-      `filter 1 — dropped ${all.length - afterAuto.length} row(s) on ${droppedAuto.size} AUTO PRQ(s)`,
-      { values: [...droppedAuto].sort() },
+      `filter 1 — dropped ${auto.dropped} row(s) on ${auto.values.length} AUTO PRQ(s)`,
+      { values: auto.values },
     );
   } else {
     log.info('filter 1 — no AUTO PRQ rows in the PO file');
   }
 
-  const kept = [];
-  const droppedSuffix = new Set();
-  for (const rec of afterAuto) {
-    if (hasLetterSuffix(rec['po no'])) { droppedSuffix.add(clean(rec['po no'])); continue; }
-    kept.push(rec);
-  }
-  if (droppedSuffix.size) {
+  const suffix = dropWhere(auto.kept, hasLetterSuffix, 'po no');
+  const kept = suffix.kept;
+  if (suffix.dropped) {
     log.info(
-      `filter 2 — dropped ${afterAuto.length - kept.length} row(s) on ${droppedSuffix.size} suffixed (split/amended) PO(s)`,
-      { values: [...droppedSuffix].sort() },
+      `filter 2 — dropped ${suffix.dropped} row(s) on ${suffix.values.length} suffixed (split/amended) PO(s)`,
+      { values: suffix.values },
     );
   } else {
     log.info('filter 2 — no suffixed PO numbers among the rows that survived filter 1');
@@ -60,17 +51,7 @@ function mapPo(sheet, log) {
   log.ok(`E · PO Created = ${e.count}`, { values: e.values });
   log.ok(`F · PO Items = ${f.count}`, { values: f.values });
 
-  let g = null;
-  if (totals) {
-    g = totals.amount;
-    log.ok(`G · Total PO Value = ${fmt(g)}  (totals row ${totals.row}, taken as printed)`);
-  } else {
-    const summed = kept.reduce((a, r) => a + (parseAmount(r['grand total']) || 0), 0);
-    log.warn(
-      `G · no totals row found at the bottom of the sheet — Grand Total left blank. ` +
-      `For reference, the filtered rows sum to ${fmt(summed)}.`,
-    );
-  }
+  const g = totalOrWarn(log, totals, 'G · Total PO Value', kept, 'filtered rows');
 
   return {
     E: e.count,
@@ -79,17 +60,13 @@ function mapPo(sheet, log) {
     audit: {
       rowsRead: all.length,
       rowsKept: kept.length,
-      autoPrqsDropped: [...droppedAuto].sort(),
-      suffixedPosDropped: [...droppedSuffix].sort(),
+      autoPrqsDropped: auto.values,
+      suffixedPosDropped: suffix.values,
       poNumbers: e.values,
       itemNames: f.values,
       totalsRow: totals ? totals.row : null,
     },
   };
-}
-
-function fmt(n) {
-  return n == null ? '—' : n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 module.exports = { mapPo };

@@ -98,7 +98,43 @@ function dataRows(records, idFields) {
   return records.filter((rec) => idFields.some((f) => clean(rec[f]) !== ''));
 }
 
+/** Split `rows` by `pred`; `values` is the sorted distinct cleaned `field` of the dropped rows. */
+function dropWhere(rows, pred, field) {
+  const kept = [];
+  const seen = new Set();
+  for (const rec of rows) {
+    if (pred(rec[field])) seen.add(clean(rec[field]));
+    else kept.push(rec);
+  }
+  return { kept, values: [...seen].sort(), dropped: rows.length - kept.length };
+}
+
+function fmt(n) {
+  return n == null ? '—' : n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/**
+ * Log and return a totals-row amount (taken as printed), or warn and return
+ * null when there is none. `label` e.g. "G · Total PO Value"; `rowsDesc` names
+ * the rows summed in the warning's reference figure.
+ */
+function totalOrWarn(log, totals, label, rows, rowsDesc) {
+  if (totals) {
+    log.ok(`${label} = ${fmt(totals.amount)}  (totals row ${totals.row}, taken as printed)`);
+    return totals.amount;
+  }
+  const summed = rows.reduce((a, r) => a + (parseAmount(r['grand total']) || 0), 0);
+  log.warn(
+    `${label.split(' · ')[0]} · no totals row found at the bottom of the sheet — Grand Total left blank. ` +
+    `For reference, the ${rowsDesc} sum to ${fmt(summed)}.`,
+  );
+  return null;
+}
+
 module.exports = {
+  dropWhere,
+  fmt,
+  totalOrWarn,
   clean,
   isAutoPrq,
   hasLetterSuffix,

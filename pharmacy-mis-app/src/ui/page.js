@@ -29,6 +29,10 @@ function page(token) {
     --warn: #e8b54c;
     --err: #ef6b6b;
     --step: #b48ce8;
+    --bg-deep: #0e141b;
+    --bg-bar: #131a23;
+    --dim-1: #3f4e61;
+    --dim-2: #4a5b70;
     --mono: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   }
   * { box-sizing: border-box; }
@@ -57,7 +61,7 @@ function page(token) {
   header .spacer { flex: 1; min-width: 8px; }
   .badge {
     font-size: 11px; padding: 3px 8px; border-radius: 999px;
-    border: 1px solid var(--line); color: var(--ink-dim); background: #131a23;
+    border: 1px solid var(--line); color: var(--ink-dim); background: var(--bg-bar);
   }
   .badge.live { color: var(--ok); border-color: #2c5b45; }
   .badge.off  { color: var(--ink-faint); }
@@ -93,14 +97,14 @@ function page(token) {
   label.field { display: block; margin-bottom: 10px; }
   label.field > span { display: block; font-size: 12px; color: var(--ink-dim); margin-bottom: 4px; }
   .row { display: flex; gap: 6px; }
-  input[type=text], input[type=date] {
+  input[type=text], input[type=date], input[type=password] {
     flex: 1; min-width: 0;
-    background: #0e141b; color: var(--ink);
+    background: var(--bg-deep); color: var(--ink);
     border: 1px solid var(--line); border-radius: 6px;
     padding: 7px 9px; font: 12px/1.4 var(--mono);
   }
   input:focus { outline: none; border-color: var(--accent); }
-  input::placeholder { color: #4a5b70; }
+  input::placeholder { color: var(--dim-2); }
 
   button {
     background: var(--panel-2); color: var(--ink);
@@ -118,12 +122,22 @@ function page(token) {
   button.ghost { background: transparent; }
 
   .hint { font-size: 11px; color: var(--ink-faint); margin: 6px 0 0; }
+  .hint.pull { margin: -4px 0 10px; }
+  .hint.flush { margin: 0 0 8px; }
+  label.field.dry { margin-bottom: 8px; }
+  label.field.dry > span { display: flex; align-items: center; gap: 6px; margin: 0; }
+  label.field.dry input { flex: 0 0 auto; }
+  .row.gap-top { margin-top: 8px; }
+  button.wide { width: 100%; margin-top: 6px; }
+  button.flex1 { flex: 1; }
+  #copyLog { padding: 4px 9px; }
+  #clearLog { padding: 3px 8px; }
   .hint code { font-family: var(--mono); color: var(--ink-dim); }
 
   .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
   .tabs button {
     flex: 1; padding: 6px; font-size: 11px;
-    border-radius: 5px; background: #131a23;
+    border-radius: 5px; background: var(--bg-bar);
   }
   .tabs button[aria-selected=true] {
     background: #23334a; border-color: var(--accent); color: #fff;
@@ -142,13 +156,13 @@ function page(token) {
     gap: 1px; background: var(--line);
     border-bottom: 1px solid var(--line);
   }
-  .cellbox { background: #131a23; padding: 9px 10px; min-width: 0; }
+  .cellbox { background: var(--bg-bar); padding: 9px 10px; min-width: 0; }
   .cellbox .col { font: 600 10px/1 var(--mono); color: var(--accent); letter-spacing: .5px; }
   .cellbox .val {
     font: 600 19px/1.25 "Segoe UI Variable Display", "Segoe UI", sans-serif;
     margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .cellbox .val.empty { color: #3f4e61; }
+  .cellbox .val.empty { color: var(--dim-1); }
   .cellbox .lbl {
     font-size: 10px; color: var(--ink-faint); margin-top: 2px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -160,7 +174,7 @@ function page(token) {
   .logbar {
     display: flex; align-items: center; gap: 10px;
     padding: 7px 14px; border-bottom: 1px solid var(--line);
-    background: #131a23; font-size: 11px; color: var(--ink-faint);
+    background: var(--bg-bar); font-size: 11px; color: var(--ink-faint);
   }
   .logbar .spacer { flex: 1; }
   .logbar label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
@@ -171,7 +185,7 @@ function page(token) {
   }
   .line { display: flex; padding: 0 14px; white-space: pre-wrap; word-break: break-word; }
   .line:hover { background: #141b24; }
-  .line .t { color: #3f4e61; flex: 0 0 66px; }
+  .line .t { color: var(--dim-1); flex: 0 0 66px; }
   .line .m { flex: 1; min-width: 0; }
   .line.debug { color: var(--ink-faint); }
   .line.info  { color: var(--ink-dim); }
@@ -181,7 +195,7 @@ function page(token) {
   .line.error { color: var(--err); }
   .line.meta  { color: #5d6f85; font-style: italic; }
   .disclose {
-    color: #4a5b70; cursor: pointer; user-select: none;
+    color: var(--dim-2); cursor: pointer; user-select: none;
     border: 0; background: none; padding: 0 0 0 6px; font: inherit;
   }
   .disclose:hover { color: var(--accent); }
@@ -196,7 +210,7 @@ function page(token) {
   footer {
     display: flex; align-items: center; gap: 8px;
     padding: 9px 14px; border-top: 1px solid var(--line);
-    background: #131a23; font-size: 12px;
+    background: var(--bg-bar); font-size: 12px;
   }
   footer .msg { flex: 1; color: var(--ink-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   footer .msg.err { color: var(--err); }
@@ -214,7 +228,7 @@ function page(token) {
   .datepair { display: flex; gap: 10px; margin-bottom: 10px; align-items: stretch; min-width: 0; }
   .datepair .box {
     flex: 1 1 0; min-width: 0; overflow: hidden;
-    background: #0e141b; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+    background: var(--bg-deep); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
   }
   .datepair .box .k { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--ink-faint); }
   .datepair .box .v { font: 600 15px/1.4 var(--mono); color: var(--ink); margin-top: 2px; }
@@ -237,12 +251,7 @@ function page(token) {
   .datepair .box.report input[type=date]:focus { outline: none; border-color: var(--accent); background: #0a0f14; }
   .datepair .box.report button.ghost.small { padding: 4px 8px; font-size: 11px; }
   label.checkline { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-dim); margin: 8px 0; cursor: pointer; }
-  input[type=password] {
-    width: 100%; background: #0e141b; color: var(--ink);
-    border: 1px solid var(--line); border-radius: 6px;
-    padding: 7px 9px; font: 12px/1.4 var(--mono);
-  }
-  input[type=password]:focus { outline: none; border-color: var(--accent); }
+  input[type=password] { width: 100%; }
   .login-status { font-size: 12px; margin-top: 8px; min-height: 16px; }
   .login-status.ok { color: var(--ok); }
   .login-status.err { color: var(--err); white-space: pre-wrap; }
@@ -282,7 +291,7 @@ function page(token) {
           </div>
         </div>
       </div>
-      <p class="hint" id="reportDateHint" style="margin:-4px 0 10px;font-size:11px">
+      <p class="hint pull" id="reportDateHint">
         Set to any date — Sign In and Run (or a manual run below) fetches or maps that day's
         reports, not just yesterday's.
       </p>
@@ -300,12 +309,12 @@ function page(token) {
           Remember username
         </label>
         <button class="primary" id="signInBtn">Sign In</button>
-        <button class="ghost" id="manualModeBtn" style="width:100%;margin-top:6px">Continue without signing in — manual run</button>
+        <button class="ghost wide" id="manualModeBtn">Continue without signing in — manual run</button>
       </div>
       <div id="runFields" hidden>
         <div class="login-status ok" id="signedInAs"></div>
         <button class="primary" id="runPortalBtn">Run</button>
-        <button class="ghost" id="signOutBtn" style="width:100%;margin-top:6px">Sign out / use a different account</button>
+        <button class="ghost wide" id="signOutBtn">Sign out / use a different account</button>
       </div>
       <div class="login-status" id="loginStatus"></div>
       <div class="summary" id="runSummary" hidden></div>
@@ -375,20 +384,20 @@ function page(token) {
 
     <section class="card">
       <h2>3 · Run (manual / preview)</h2>
-      <p class="hint" style="margin:0 0 8px">
+      <p class="hint flush">
         For files already pulled or exported by hand. The <b>Sign In &amp; Run</b> button above
         is the normal path — it pulls straight from Amrita HIS and runs this same pipeline.
       </p>
-      <label class="field" style="margin-bottom:8px">
-        <span style="display:flex;align-items:center;gap:6px;margin:0">
-          <input type="checkbox" id="dryRun" style="flex:0 0 auto">
+      <label class="field dry">
+        <span>
+          <input type="checkbox" id="dryRun">
           Preview only — do not write the master file
         </span>
       </label>
       <button class="primary" id="runBtn">Run daily report</button>
-      <div class="row" style="margin-top:8px">
-        <button id="openMaster" class="ghost" disabled style="flex:1">Open master</button>
-        <button id="showMaster" class="ghost" disabled style="flex:1">Show in folder</button>
+      <div class="row gap-top">
+        <button id="openMaster" class="ghost flex1" disabled>Open master</button>
+        <button id="showMaster" class="ghost flex1" disabled>Show in folder</button>
       </div>
     </section>
   </div>
@@ -401,14 +410,14 @@ function page(token) {
         <span class="spacer"></span>
         <label><input type="checkbox" id="showDebug"> show detail</label>
         <label><input type="checkbox" id="autoScroll" checked> follow</label>
-        <button class="ghost" id="clearLog" style="padding:3px 8px">Clear</button>
+        <button class="ghost" id="clearLog">Clear</button>
       </div>
       <div id="log"></div>
     </div>
     <footer>
       <div class="spin" id="spin" hidden></div>
       <div class="msg" id="statusMsg">Ready.</div>
-      <button class="ghost" id="copyLog" style="padding:4px 9px">Copy log</button>
+      <button class="ghost" id="copyLog">Copy log</button>
     </footer>
   </div>
 </main>
@@ -434,8 +443,7 @@ const api = async (path, body) => {
   return data;
 };
 
-/* ---------- persisted form state ---------- */
-const STATE_KEY = 'pharmacy-mis-state';
+/* ---------- persisted form state (saved on the server — see core/settings.js) ---------- */
 const form = {
   read() {
     return {
@@ -460,23 +468,15 @@ const form = {
       mode,
     };
   },
-  /**
-   * Saved on the server, not in localStorage. The window's origin carries a
-   * fresh port on every launch, so a localStorage entry never survived one —
-   * which is exactly why the archive root kept coming back empty.
-   *
-   * Kept in localStorage as well, purely so a reload within this same launch
-   * is instant and works even if the save request is still in flight.
-   */
+  /** Debounced save to the server. localStorage is no use: the origin carries a fresh port every launch. */
   save() {
     const values = form.values();
-    try { localStorage.setItem(STATE_KEY, JSON.stringify(values)); } catch (e) { /* storage may be unavailable */ }
     clearTimeout(form._saveTimer);
     form._saveTimer = setTimeout(() => {
       api('/api/settings', values).catch(() => { /* not remembering is not fatal */ });
     }, 300);
   },
-  /** Fill the form in from whatever was last saved. Server first — it is the copy that outlives a launch. */
+  /** Fill the form in from whatever was last saved. */
   apply(s) {
     if (!s) return;
     $('archiveRoot').value = s.archiveRoot || '';
@@ -485,11 +485,6 @@ const form = {
     $('filePO').value = s.filePO || '';
     $('fileGRN').value = s.fileGRN || '';
     if (s.mode) setMode(s.mode);
-  },
-  restore() {
-    let s = null;
-    try { s = JSON.parse(localStorage.getItem(STATE_KEY) || 'null'); } catch (e) { s = null; }
-    form.apply(s);
   },
 };
 
@@ -601,7 +596,8 @@ $('copyLog').onclick = async () => {
  * markup. The link opens in the operator's normal browser, not this window
  * (see main.js's setWindowOpenHandler for target="_blank").
  */
-function renderMessageWithLink(el, text, link, label) {
+function setMessage(id, base, text, kind, link, label) {
+  const el = $(id);
   el.textContent = '';
   el.appendChild(document.createTextNode(text));
   if (link) {
@@ -613,13 +609,10 @@ function renderMessageWithLink(el, text, link, label) {
     a.textContent = label || 'what this means';
     el.appendChild(a);
   }
+  el.className = base + (kind ? ' ' + kind : '');
 }
 
-function setStatus(text, kind, link, linkLabel) {
-  const el = $('statusMsg');
-  renderMessageWithLink(el, text, link, linkLabel);
-  el.className = 'msg' + (kind ? ' ' + kind : '');
-}
+const setStatus = (...a) => setMessage('statusMsg', 'msg', ...a);
 function setBusy(busy) {
   $('spin').hidden = !busy;
   $('runBtn').disabled = busy;
@@ -640,18 +633,13 @@ let pipelineBusy = false;
 let reportDateIso = null; // set from the server at boot — the single source of truth for "yesterday"
 let lastRunWasPortal = false; // which button started the run in flight, for the run-end handler below
 
-function setLoginStatus(text, kind, link, linkLabel) {
-  const el = $('loginStatus');
-  renderMessageWithLink(el, text, link, linkLabel);
-  el.className = 'login-status' + (kind ? ' ' + kind : '');
-}
+const setLoginStatus = (...a) => setMessage('loginStatus', 'login-status', ...a);
 
 function showLoginFields() {
   $('loginFields').hidden = false;
   $('runFields').hidden = true;
 }
 let signedInUsername = '';
-function activeUsername() { return signedInUsername; }
 function showRunFields(username) {
   signedInUsername = username || signedInUsername;
   $('loginFields').hidden = true;
@@ -693,28 +681,27 @@ function renderPortalSummary(result) {
 
 /**
  * The username field must reflect ONLY this app's own remembered value
- * (%LOCALAPPDATA%\PharmacyMIS\credentials.json — never the password), never
- * whatever a browser's or the operating system's own form-autofill decides
- * to suggest for a field named "username"/"password". Both fields are
- * therefore forced to a known state here rather than trusted to already be
- * blank: username is cleared and then set from our own store if there is
- * one, and the password is unconditionally cleared and left that way — nothing
- * in this app ever writes a value into it programmatically.
+ * (the server's settings file — never the password), never whatever a
+ * browser's or the operating system's own form-autofill decides to suggest
+ * for a field named "username"/"password". Both fields are therefore forced to
+ * a known state here rather than trusted to already be blank: they are cleared
+ * at boot, the username is then set from our own store if there is one, and the
+ * password is left empty — nothing in this app ever writes a value into it
+ * programmatically.
  */
-async function loadSavedUsername() {
+function clearLoginFields() {
   $('hisUsername').value = '';
   $('hisPassword').value = '';
-  try {
-    const r = await api('/api/saved-username');
-    if (r.username) {
-      $('hisUsername').value = r.username;
-      $('rememberUsername').checked = true;
-    }
-  } catch (e) { /* not fatal — the user can just type it */ }
   // Autofill (browser or OS-level) can act asynchronously, after this
   // function has already run — the password is enforced empty one more time
   // shortly after, without depending on any one moment being "late enough".
   setTimeout(() => { $('hisPassword').value = ''; }, 400);
+}
+
+function prefillUsername(username) {
+  if (!username) return;
+  $('hisUsername').value = username;
+  $('rememberUsername').checked = true;
 }
 
 /*
@@ -828,6 +815,15 @@ async function syncSignedInFields() {
 }
 
 /* ---------- live event stream ---------- */
+/* Prefix and whether to append the screenshot path, per failed-run stage. */
+const RUN_FAILURE = {
+  login: ['Amrita HIS session problem: ', false],
+  // Stopped during the portal pull itself — the classification stage never
+  // ran, so there is nothing in the master file from this attempt.
+  portal: ['Stopped during the portal pull (classification was not run): ', true],
+  automation: ['Report automation failed: ', true],
+};
+
 function connect() {
   const es = new EventSource('/api/events?token=' + TOKEN);
   es.onopen = () => { $('connBadge').textContent = 'live'; $('connBadge').className = 'badge live'; };
@@ -851,7 +847,7 @@ function connect() {
     if (lastRunWasPortal) {
       // The Edge session stays signed in after a run unless the portal signed
       // it out (or Edge was closed) — r.signedIn says which.
-      if (r.signedIn) showRunFields(activeUsername());
+      if (r.signedIn) showRunFields(signedInUsername);
       else showLoginFields();
       lastRunWasPortal = false;
       if (r.ok) {
@@ -859,22 +855,10 @@ function connect() {
           ? '✓ Automation completed — still signed in. Run again any time; close the Edge window to sign out.'
           : '✓ Automation completed. Sign in again to run once more.', 'ok');
         renderPortalSummary(r);
-      } else if (r.stage === 'login') {
-        setLoginStatus('✗ Amrita HIS session problem: ' + r.error, 'err', r.docLink, r.docLinkLabel);
-      } else if (r.stage === 'portal') {
-        // Stopped during the portal pull itself — the classification stage
-        // never ran, so there is nothing in the master file from this attempt.
-        setLoginStatus(
-          '✗ Stopped during the portal pull (classification was not run): ' + r.error
-          + (r.screenshot ? ' — screenshot: ' + r.screenshot : ''),
-          'err',
-          r.docLink,
-          r.docLinkLabel,
-        );
       } else {
+        const [prefix, withShot] = RUN_FAILURE[r.stage] || RUN_FAILURE.automation;
         setLoginStatus(
-          '✗ Report automation failed: ' + r.error
-          + (r.screenshot ? ' — screenshot: ' + r.screenshot : ''),
+          '✗ ' + prefix + r.error + (withShot && r.screenshot ? ' — screenshot: ' + r.screenshot : ''),
           'err',
           r.docLink,
           r.docLinkLabel,
@@ -932,39 +916,25 @@ async function refreshPaths() {
 }
 
 /* ---------- pickers ---------- */
-$('pickRoot').onclick = async () => {
+async function pick(endpoint, opts, id, useDate, announce) {
   try {
-    const r = await api('/api/pick-folder', { title: 'Select the archive root folder', initial: $('archiveRoot').value.trim() });
-    if (r.path) { $('archiveRoot').value = r.path; form.save(); refreshPaths(); }
-  } catch (err) { setStatus(err.message, 'err'); }
-};
-
-$('pickInput').onclick = async () => {
-  try {
-    const r = await api('/api/pick-folder', { title: "Select the day's inputs folder", initial: $('inputFolder').value.trim() });
+    const r = await api(endpoint, opts);
     if (!r.path) return;
-    $('inputFolder').value = r.path;
-    if (r.dateFromName && !$('reportDate').value) {
+    $(id).value = r.path;
+    if (useDate && r.dateFromName && !$('reportDate').value) {
       $('reportDate').value = r.dateFromName;
-      setStatus('Date ' + r.dateFromName + ' taken from the folder name.');
+      if (announce) setStatus('Date ' + r.dateFromName + ' taken from the folder name.');
     }
     form.save();
     refreshPaths();
   } catch (err) { setStatus(err.message, 'err'); }
-};
+}
 
+$('pickRoot').onclick = () => pick('/api/pick-folder', { title: 'Select the archive root folder', initial: $('archiveRoot').value.trim() }, 'archiveRoot');
+$('pickInput').onclick = () => pick('/api/pick-folder', { title: "Select the day's inputs folder", initial: $('inputFolder').value.trim() }, 'inputFolder', true, true);
 document.querySelectorAll('button[data-pick]').forEach((btn) => {
-  btn.onclick = async () => {
-    const slot = btn.dataset.pick;
-    try {
-      const r = await api('/api/pick-file', { title: 'Select the ' + slot + ' file' });
-      if (!r.path) return;
-      $('file' + slot).value = r.path;
-      if (r.dateFromName && !$('reportDate').value) $('reportDate').value = r.dateFromName;
-      form.save();
-      refreshPaths();
-    } catch (err) { setStatus(err.message, 'err'); }
-  };
+  const slot = btn.dataset.pick;
+  btn.onclick = () => pick('/api/pick-file', { title: 'Select the ' + slot + ' file' }, 'file' + slot, true);
 });
 
 $('openMaster').onclick = async () => {
@@ -1007,18 +977,15 @@ $('runBtn').onclick = async () => {
 
 /* ---------- boot ---------- */
 (async () => {
-  form.restore();
   connect();
-  loadSavedUsername();
+  clearLoginFields();
   try {
     const s = await api('/api/status');
     reportDateIso = s.reportDate;
     $('todayDisplay').textContent = s.todayDisplay;
 
-    // The server's copy is the one that survives a restart, so it wins over
-    // whatever localStorage had — but only where it actually holds something,
-    // so a fresh install does not wipe the fields restore() just filled in.
-    if (s.settings && Object.keys(s.settings).length) form.apply({ ...form.values(), ...s.settings });
+    form.apply(s.settings);
+    prefillUsername(s.settings.username);
 
     if (!$('reportDate').value) { $('reportDate').value = s.reportDate; }
 

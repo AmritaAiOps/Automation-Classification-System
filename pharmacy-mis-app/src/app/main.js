@@ -72,7 +72,6 @@ const WINDOW = { width: 1280, height: 840, minWidth: 940, minHeight: 600, resiza
 let stage = 'starting up';
 
 let mainWindow = null;
-let httpServer = null;
 let stopServer = null;
 /** Set once shutdown starts, so teardown noise is not reported as a failure. */
 let quitting = false;
@@ -194,7 +193,6 @@ async function startGui() {
   stage = 'starting the local server';
   const { createServer } = require('../ui/server');
   const { server, shutdown: closeServer } = createServer();
-  httpServer = server;
   stopServer = closeServer;
 
   const url = await new Promise((resolve, reject) => {
@@ -207,11 +205,7 @@ async function startGui() {
 
   stage = 'opening the application window';
   mainWindow = new BrowserWindow({
-    width: WINDOW.width,
-    height: WINDOW.height,
-    minWidth: WINDOW.minWidth,
-    minHeight: WINDOW.minHeight,
-    resizable: WINDOW.resizable,
+    ...WINDOW,
     title: APP_NAME + ' — Daily Report',
     backgroundColor: '#10151c',
     show: false,
@@ -279,10 +273,7 @@ function shutdown() {
   if (stopServer) {
     try { stopServer(); } catch { /* already closing */ }
     stopServer = null;
-  } else if (httpServer) {
-    try { httpServer.close(); } catch { /* already closing */ }
   }
-  httpServer = null;
 }
 
 app.on('window-all-closed', () => {

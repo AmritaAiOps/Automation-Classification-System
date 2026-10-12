@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 const { templateBuffer } = require('./template');
-const { ensureDir } = require('../core/paths');
+const { ensureDir, parseReportDate } = require('../core/paths');
 
 /**
  * The master report writer.
@@ -88,7 +88,7 @@ function captureRowStyle(row) {
   const styles = [];
   for (let c = 1; c <= LAST_COLUMN; c += 1) {
     const st = row.getCell(c).style;
-    styles[c] = st ? JSON.parse(JSON.stringify(st)) : null;
+    styles[c] = st ? structuredClone(st) : null;
   }
   return styles;
 }
@@ -112,12 +112,15 @@ function rowHasAnyValue(row) {
   return false;
 }
 
+/** Every row from FIRST_DATA_ROW to the last in use. */
+function* dataRows(ws) {
+  const last = lastRowNumber(ws);
+  for (let r = FIRST_DATA_ROW; r <= last; r += 1) yield ws.getRow(r);
+}
+
 function countDataRows(ws) {
   let n = 0;
-  const last = lastRowNumber(ws);
-  for (let r = FIRST_DATA_ROW; r <= last; r += 1) {
-    if (rowHasAnyValue(ws.getRow(r))) n += 1;
-  }
+  for (const row of dataRows(ws)) if (rowHasAnyValue(row)) n += 1;
   return n;
 }
 
@@ -132,11 +135,9 @@ function cellDateIso(value) {
   }
   if (typeof value === 'object' && value.result instanceof Date) return cellDateIso(value.result);
   const s = String(value).trim();
-  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  m = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec(s);
-  if (m) return `${m[3]}-${String(+m[2]).padStart(2, '0')}-${String(+m[1]).padStart(2, '0')}`;
-  return null;
+  try { return parseReportDate(s).iso; } catch { return null; }
 }
 
 /**
@@ -145,20 +146,14 @@ function cellDateIso(value) {
  * figures), so filling one in must update it rather than append a duplicate.
  */
 function findDateRow(ws, iso) {
-  const last = lastRowNumber(ws);
-  for (let r = FIRST_DATA_ROW; r <= last; r += 1) {
-    if (cellDateIso(ws.getRow(r).getCell(2).value) === iso) return r;
-  }
+  for (const row of dataRows(ws)) if (cellDateIso(row.getCell(2).value) === iso) return row.number;
   return null;
 }
 
 /** First row at or after FIRST_DATA_ROW that holds nothing at all. */
 function firstFreeRow(ws) {
-  const last = lastRowNumber(ws);
-  for (let r = FIRST_DATA_ROW; r <= last; r += 1) {
-    if (!rowHasAnyValue(ws.getRow(r))) return r;
-  }
-  return Math.max(last + 1, FIRST_DATA_ROW);
+  for (const row of dataRows(ws)) if (!rowHasAnyValue(row)) return row.number;
+  return Math.max(lastRowNumber(ws) + 1, FIRST_DATA_ROW);
 }
 
 /**
@@ -166,31 +161,25 @@ function firstFreeRow(ws) {
  * row, or from the styling captured off the template before it was cleared.
  */
 function applyRowStyle(ws, row, seedStyle) {
-  let styles = null;
-  const last = lastRowNumber(ws);
-  for (let r = FIRST_DATA_ROW; r <= last; r += 1) {
-    if (r !== row.number && rowHasAnyValue(ws.getRow(r))) { styles = captureRowStyle(ws.getRow(r)); break; }
-  }
-  if (!styles) styles = seedStyle;
+  const sibling = [...dataRows(ws)].find((r) => r.number !== row.number && rowHasAnyValue(r));
+  const styles = sibling ? captureRowStyle(sibling) : seedStyle;
   if (!styles) return;
 
   for (let c = 1; c <= LAST_COLUMN; c += 1) {
-    if (styles[c]) row.getCell(c).style = JSON.parse(JSON.stringify(styles[c]));
+    if (styles[c]) row.getCell(c).style = structuredClone(styles[c]);
   }
 }
 
 /** Highlight every cell in a Sunday date row without changing its values. */
 function applySundayHighlight(row, isSunday) {
   if (!isSunday) return;
-  for (let c = 1; c <= LAST_COLUMN; c += 1) row.getCell(c).fill = JSON.parse(JSON.stringify(SUNDAY_FILL));
+  for (let c = 1; c <= LAST_COLUMN; c += 1) row.getCell(c).fill = structuredClone(SUNDAY_FILL);
 }
 
 /** Renumber column A 1..n over the rows that carry a date. */
 function renumber(ws) {
-  const last = lastRowNumber(ws);
   let n = 0;
-  for (let r = FIRST_DATA_ROW; r <= last; r += 1) {
-    const row = ws.getRow(r);
+  for (const row of dataRows(ws)) {
     if (cellDateIso(row.getCell(2).value) == null) continue;
     n += 1;
     row.getCell(1).value = n;
@@ -232,7 +221,7 @@ async function writeDailyRow({ masterFile, date, fields, log, dryRun = false }) 
 
     if (next == null) {
       changes.push({
-        field, column: colLetter(col), label: FIELD_LABELS[field], before, after: before,
+        field, column: field, label: FIELD_LABELS[field], before, after: before,
         action: 'skipped (no value from source)',
       });
       continue;
@@ -241,7 +230,7 @@ async function writeDailyRow({ masterFile, date, fields, log, dryRun = false }) 
     cell.value = next;
     if (MONEY_FIELDS.has(field)) cell.numFmt = MONEY_FORMAT;
     changes.push({
-      field, column: colLetter(col), label: FIELD_LABELS[field], before, after: next,
+      field, column: field, label: FIELD_LABELS[field], before, after: next,
       action: before === null ? 'written' : 'overwritten',
     });
   }
@@ -280,17 +269,6 @@ async function saveAtomically(wb, target) {
     }
     throw err;
   }
-}
-
-function colLetter(n) {
-  let s = '';
-  let x = n;
-  while (x > 0) {
-    const r = (x - 1) % 26;
-    s = String.fromCharCode(65 + r) + s;
-    x = Math.floor((x - r) / 26);
-  }
-  return s;
 }
 
 module.exports = { writeDailyRow, cellDateIso, FIELD_LABELS };

@@ -2,13 +2,13 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const { version } = require('../../package.json');
 const { runDailyReport } = require('../pipeline');
 const { pickFolder, pickFile, revealInExplorer, openWithDefaultApp } = require('./dialogs');
 const { resolveLayout, dateFromName, getPreviousCalendarDay, getToday, formatPortalDate } = require('../core/paths');
 const { page } = require('./page');
 const { log } = require('../core/appdata');
-const { loadSavedUsername, saveUsername, clearSavedUsername } = require('../core/credentials');
-const { loadSettings, saveSettings } = require('../core/settings');
+const { loadSettings, saveSettings, rememberUsername } = require('../core/settings');
 const portalSession = require('../core/portalSession');
 const { makeLogger, LOGIN_FAILURE } = require('../portalRun');
 
@@ -32,24 +32,7 @@ function scraperInfo() {
   }
 }
 
-/**
- * The application version. Taken from Electron, which reads it out of the
- * package.json inside the packaged asar, so there is no file to find on disk
- * next to the exe. Outside Electron (the test harness) it degrades to the
- * source package.json, and to 'unknown' if even that is not there.
- */
-function appVersion() {
-  try {
-    // eslint-disable-next-line global-require
-    return require('electron').app.getVersion();
-  } catch { /* not running under Electron */ }
-  try {
-    // eslint-disable-next-line global-require
-    return require('../../package.json').version;
-  } catch {
-    return 'unknown';
-  }
-}
+const errMessage = (err) => (err && err.message ? err.message : String(err));
 
 /**
  * The app's local server. Zero dependencies beyond node:http on purpose - it
@@ -62,20 +45,28 @@ function appVersion() {
 
 const TOKEN = crypto.randomBytes(24).toString('hex');
 
-/** Open SSE connections, keyed by an id so a stale one can be dropped. */
-const streams = new Map();
-let nextStreamId = 1;
+/** Open SSE connections. One shared timer keeps them all alive. */
+const streams = new Set();
+let keepAlive = null;
 
 function broadcast(event, data) {
   const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const [id, stream] of streams) {
+  for (const res of streams) {
     try {
-      stream.res.write(frame);
+      res.write(frame);
     } catch {
-      clearInterval(stream.keepAlive);
-      streams.delete(id);
+      streams.delete(res);
     }
   }
+}
+
+function ping() {
+  for (const res of streams) { try { res.write(': ping\n\n'); } catch { /* dropped */ } }
+}
+
+function dropStream(res) {
+  streams.delete(res);
+  if (!streams.size) { clearInterval(keepAlive); keepAlive = null; }
 }
 
 // The operator closing the Edge window is how a sign-in ends now, so the
@@ -203,13 +194,13 @@ const routes = {
       const session = await scraper.startSession(credentials, makeLogger((entry) => broadcast('log', entry)));
       await portalSession.set(session, body.username);
 
-      if (body.rememberUsername) saveUsername(body.username);
-      else if (body.rememberUsername === false) clearSavedUsername();
+      if (body.rememberUsername) rememberUsername(body.username);
+      else if (body.rememberUsername === false) rememberUsername('');
 
       broadcast('login-end', { ok: true });
       return { ok: true };
     } catch (err) {
-      const message = err && err.message ? err.message : String(err);
+      const message = errMessage(err);
       log.warn('Amrita HIS sign-in failed: ' + message);
       const payload = {
         ok: false,
@@ -260,7 +251,7 @@ const routes = {
         try {
           pull = await scraper.runReports(session, { layout }, makeLogger(sink));
         } catch (err) {
-          const message = err && err.message ? err.message : String(err);
+          const message = errMessage(err);
           // A pull that stopped partway through never has files worth
           // classifying — the classification stage below must not run against
           // whatever was already sitting in the folder from a previous day.
@@ -275,7 +266,7 @@ const routes = {
         if (result.ok) result.portalFiles = pull.files;
         else result.stage = 'automation';
       } catch (err) {
-        const message = err && err.message ? err.message : String(err);
+        const message = errMessage(err);
         result = {
           ok: false,
           error: message,
@@ -332,16 +323,6 @@ const routes = {
     return { path: file, dateFromName: file ? dateFromName(file) : null };
   },
 
-  /** The remembered username, if "Remember username" was checked on a previous run — never the password. */
-  async 'GET /api/saved-username'() {
-    return { username: loadSavedUsername() };
-  },
-
-  async 'POST /api/forget-username'() {
-    clearSavedUsername();
-    return { ok: true };
-  },
-
   async 'POST /api/reveal'(body) {
     if (!body.path) throw new Error('Nothing to show.');
     await revealInExplorer(body.path);
@@ -357,7 +338,7 @@ const routes = {
   async 'GET /api/status'() {
     return {
       ok: true,
-      version: appVersion(),
+      version,
       node: process.versions.node,
       electron: process.versions.electron || null,
       scraper: scraperInfo(),
@@ -411,10 +392,9 @@ function createServer() {
         'x-accel-buffering': 'no',
       });
       res.write('retry: 1000\n\n');
-      const id = nextStreamId++;
-      const keepAlive = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* dropped */ } }, 15000);
-      streams.set(id, { res, keepAlive });
-      req.on('close', () => { clearInterval(keepAlive); streams.delete(id); });
+      streams.add(res);
+      keepAlive = keepAlive || setInterval(ping, 15000);
+      req.on('close', () => dropStream(res));
       return;
     }
 
@@ -425,7 +405,7 @@ function createServer() {
       const body = req.method === 'POST' ? await readBody(req) : {};
       json(res, 200, await handler(body));
     } catch (err) {
-      json(res, 400, { error: err && err.message ? err.message : String(err) });
+      json(res, 400, { error: errMessage(err) });
     }
   });
 
@@ -444,11 +424,10 @@ function createServer() {
     // closes. Not awaited — shutdown() itself is synchronous, and app.exit()
     // is about to tear the process down regardless.
     portalSession.clear().catch(() => {});
-    for (const [id, stream] of streams) {
-      clearInterval(stream.keepAlive);
-      try { stream.res.end(); } catch { /* already gone */ }
-      try { stream.res.destroy(); } catch { /* already gone */ }
-      streams.delete(id);
+    for (const res of streams) {
+      try { res.end(); } catch { /* already gone */ }
+      try { res.destroy(); } catch { /* already gone */ }
+      dropStream(res);
     }
     try { server.close(); } catch { /* already closing */ }
     // Node 18.2+. Anything still holding a socket open is not worth waiting for.
@@ -457,7 +436,7 @@ function createServer() {
     }
   }
 
-  return { server, token: TOKEN, broadcast, shutdown };
+  return { server, shutdown };
 }
 
 module.exports = { createServer, TOKEN };

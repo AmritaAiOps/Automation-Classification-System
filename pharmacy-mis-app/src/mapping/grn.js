@@ -1,6 +1,6 @@
 'use strict';
 
-const { countDistinct, dataRows, findTotalsRow, parseAmount } = require('./rules');
+const { countDistinct, dataRows, findTotalsRow, totalOrWarn } = require('./rules');
 
 /**
  * GRN section — Daily Report columns H, I and J.
@@ -38,17 +38,7 @@ function mapGrn(sheet, log) {
   log.ok(`H · Total no. of GRN = ${h.count}`, { values: h.values });
   log.ok(`I · GRN Itemwise = ${i.count}`, { values: i.values });
 
-  let j = null;
-  if (totals) {
-    j = totals.amount;
-    log.ok(`J · Total GRN Value = ${fmt(j)}  (totals row ${totals.row}, taken as printed)`);
-  } else {
-    const summed = all.reduce((a, r) => a + (parseAmount(r['grand total']) || 0), 0);
-    log.warn(
-      `J · no totals row found at the bottom of the sheet — Grand Total left blank. ` +
-      `For reference, the data rows sum to ${fmt(summed)}.`,
-    );
-  }
+  const j = totalOrWarn(log, totals, 'J · Total GRN Value', all, 'data rows');
 
   return {
     H: h.count,
@@ -62,10 +52,6 @@ function mapGrn(sheet, log) {
       totalsRow: totals ? totals.row : null,
     },
   };
-}
-
-function fmt(n) {
-  return n == null ? '—' : n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 module.exports = { mapGrn };

@@ -76,9 +76,7 @@ code that guards against it:
 
 `tools/check-alert-capture.js` (`npm run check-alert-capture`) is a regression
 check for the first of these against a local page, not the real portal, so it
-runs without portal access. `tools/inspect-purchase-form.js` and
-`tools/probe-purchase-filters.js` are the scripts that found the second and
-third — kept for the next time this form looks like it is lying.
+runs without portal access.
 
 ## Running it
 
@@ -333,13 +331,9 @@ src/
 tools/
   build.js                 the one production build
   launcher/Launcher.cs     the single-file launcher the customer runs (C#)
-  launcher/Pack.cs         build-time LZMS compressor (developer machine only)
-  make-icon.js             generates assets/icon.ico
   gen-template.js          re-bakes the reference format into src/excel/template.js
-  selftest.js              81 checks against the real reference files
+  selftest.js              86 checks against the real reference files
   release-test.js          checks the built exe, in isolation, as a customer
-  audit-dependencies.js    every DLL the exe asks Windows for, from its PE
-                           import table — how "nothing to install" is checked
   check-failure-dialog.js  provokes the launcher's failure path and confirms
                            the customer actually sees a dialog
   check-unpack-recovery.js compiles Launcher.cs against a small payload and
@@ -347,11 +341,6 @@ tools/
                            replace the folder it unpacks into
   check-alert-capture.js   regression check for the empty-report alert race
                            against a local page — see Project status above
-  inspect-purchase-form.js dumps every control on the live Purchase Report
-                           form, as the DOM has it, against a signed-in session
-  probe-purchase-filters.js runs the live Purchase Report with different
-                           filter combinations and reports what each one
-                           actually returns — both need portal access
 ```
 
 ## Development
@@ -359,23 +348,15 @@ tools/
 ```
 npm install
 npm start           # open the app window from source
-npm test            # 81 checks against ../reference
+npm test            # 86 checks against ../reference
 npm run build       # -> dist/Pharmacy-MIS.exe   (1-5 min, see below)
 npm run release-test # checks the built exe, not the source  (~5 min)
-npm run audit-deps  # lists every DLL the exe asks Windows for
 npm run check-failure-dialog  # proves the launcher's error dialog appears
 npm run check-unpack-recovery # proves a locked runtime folder cannot stop a launch
 npm run check-alert-capture   # regression check for the empty-report alert race (launches a real browser)
 ```
 
-Build time is dominated by compressing the payload — LZMS takes about 90
-seconds on 240 MB, and verifies itself by decompressing and comparing before
-the payload is used.
-
-The first build on a new clone also downloads Puppeteer's Chromium (~400 MB)
-into `.chromium-cache/`. `npm install` normally does that through the
-`postinstall` script; step 4 of the build does it too if the folder is missing,
-so a clone that was installed with `--ignore-scripts` still builds.
+Build time is dominated by zipping the payload.
 
 `npm test` runs the real files in `../reference` through the whole pipeline and
 asserts the eight figures, the identification (including after renaming), the
@@ -391,24 +372,19 @@ If the master's reference format changes, drop the new workbook into
 
 ## How the exe is built
 
-`npm run build` is the only production command. It does nine things:
+`npm run build` is the only production command. It does seven things:
 
 1. bakes `../reference/Daily Report for coding.xlsx` into
    `src/excel/template.js` as base64, so the exe carries the master report's
    exact formatting and no reference file is ever shipped
-2. generates `assets/icon.ico` (drawn in code by `tools/make-icon.js`, so the
-   icon is reproducible rather than a committed binary)
-3. runs the source self-test and **refuses to build if it fails**
-4. makes sure Puppeteer's Chromium is in `.chromium-cache/`, downloading it if
-   it is not — that folder is ~400 MB, so it is gitignored and absent on a
-   fresh clone; the build fetches it rather than stopping
-5. has `electron-builder --dir` assemble the Electron application, then copies
-   `.chromium-cache/` into its resources folder
-6. removes the locales and helper executables the application never loads
-7. packs the whole application into one brotli-compressed payload
-8. compiles the launcher with `csc.exe` (the C# compiler that ships with
+2. runs the source self-test and **refuses to build if it fails**
+3. has `electron-builder --dir` assemble the Electron application (no browser
+   is shipped: the portal run drives the customer's own Microsoft Edge)
+4. removes the locales and helper executables the application never loads
+5. packs the whole application into one zip payload
+6. compiles the launcher with `csc.exe` (the C# compiler that ships with
    Windows) and appends the payload to it
-9. verifies the result and writes `Pharmacy-MIS.exe.sha256`
+7. verifies the result and writes `Pharmacy-MIS.exe.sha256`
 
 ### Why Electron, and why a launcher of our own
 
@@ -441,11 +417,10 @@ the release from 176 MB to about 91 MB. It uses two in-box Windows components:
 | Component | Used for | Present on |
 | --- | --- | --- |
 | .NET Framework 4.x | the launcher itself | Windows 10 1903+ and Windows 11, non-removable |
-| `cabinet.dll` (Compression API) | LZMS decompression | every Windows since 8 |
 
-LZMS matters: it compresses this payload to 90 MB where Deflate — the only
-thing .NET Framework offers natively — manages 104 MB, and it is only 1.6 MB
-behind Brotli, which .NET Framework does not have at all.
+The payload is a plain Deflate zip, read by the .NET Framework's own
+`System.IO.Compression` — about 14 MB larger than LZMS was, with no second
+compressor or custom archive format to maintain.
 
 The compiler is `csc.exe` from that same in-box .NET Framework, at a fixed path
 under `%SystemRoot%\Microsoft.NET\Framework64`. No SDK, no Visual Studio and
@@ -454,29 +429,6 @@ Windows never gives it a console window — checked in the build and again in th
 release check. Dropping the Node route also removed `postject` and `rcedit` from
 the build: the C# compiler writes the version resource from assembly attributes
 and takes the icon with `/win32icon`.
-
-### Code signing
-
-The exe is unsigned. Windows SmartScreen will therefore show *"Windows
-protected your PC"* on a machine that has not seen the file before — **More
-info → Run anyway**, once. This is Windows commenting on the publisher, not a
-sign that anything is missing.
-
-For production, sign it with an OV or EV certificate; an EV certificate clears
-SmartScreen immediately, an OV one builds reputation over time:
-
-```powershell
-signtool sign /fd SHA256 /f cert.pfx /p <password> `
-  /tr http://timestamp.digicert.com /td SHA256 dist\Pharmacy-MIS.exe
-```
-
-Signing is not required for development and the build does not depend on it.
-Re-run `npm run release-test` after signing, and regenerate the SHA-256.
-
-Signing appends the certificate to the end of the file, which moves the payload
-trailer away from where it was written. The launcher therefore searches
-backwards for it rather than reading a fixed offset, so signing before or after
-appending both work — the release cannot be broken by the act of signing it.
 
 ## Verifying a release
 
@@ -519,8 +471,7 @@ uninstalled on a supported system:
 | What | Used for | Present on |
 | --- | --- | --- |
 | .NET Framework 4.x | the launcher that unpacks and starts the app | Windows 10 1903 and later, Windows 11 |
-| `cabinet.dll` | decompressing the payload (LZMS) | every Windows since 8 |
-| core Windows DLLs | the application itself | every Windows 10/11 — verified against the exe's PE import table by `npm run audit-deps` |
+| core Windows DLLs | the application itself | every Windows 10/11 — |
 
 Requires **64-bit Windows 10 or 11**. Explorer is used only for the *Open
 master* and *Show in folder* buttons; neither is needed to generate a report.
@@ -545,7 +496,7 @@ next updates.
 
 - **x64 only.** There is no ARM64 build. Add `arm64` to the electron-builder
   target and build on, or cross-build for, that architecture if it is needed.
-- **Unsigned.** See *Code signing* above.
+- **Unsigned.** Windows SmartScreen shows *"Windows protected your PC"* on a machine that has not seen the file before (More info -> Run anyway, once).
 - **First launch is slower.** The first run unpacks the application into
   `%LOCALAPPDATA%`, which takes a few seconds and about 240 MB of disk. Later
   runs skip it entirely. The exe itself is 90 MB.

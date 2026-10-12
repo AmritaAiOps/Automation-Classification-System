@@ -1,6 +1,5 @@
 node_modules/
 build/
-assets/icon.ico
 .chromium-cache/
 
 # The release exe and its checksum are committed (via Git LFS); see the root

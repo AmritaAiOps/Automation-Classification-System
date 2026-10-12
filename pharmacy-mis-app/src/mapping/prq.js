@@ -1,6 +1,6 @@
 'use strict';
 
-const { isAutoPrq, countDistinct, dataRows, clean } = require('./rules');
+const { isAutoPrq, countDistinct, dataRows, dropWhere } = require('./rules');
 
 /**
  * PRQ section — Daily Report columns C and D.
@@ -12,21 +12,11 @@ function mapPrq(sheet, log) {
   const all = dataRows(sheet.records, ['prq no', 'item name']);
   log.info(`${all.length} PRQ line rows read`);
 
-  const kept = [];
-  const droppedPrqs = new Set();
-  for (const rec of all) {
-    if (isAutoPrq(rec['prq no'])) {
-      droppedPrqs.add(clean(rec['prq no']));
-      continue;
-    }
-    kept.push(rec);
-  }
-
-  const dropped = all.length - kept.length;
+  const { kept, values: droppedPrqs, dropped } = dropWhere(all, isAutoPrq, 'prq no');
   if (dropped) {
     log.info(
-      `dropped ${dropped} row(s) on ${droppedPrqs.size} system-generated PRQ(s) starting "AUTO"`,
-      { values: [...droppedPrqs].sort() },
+      `dropped ${dropped} row(s) on ${droppedPrqs.length} system-generated PRQ(s) starting "AUTO"`,
+      { values: droppedPrqs },
     );
   } else {
     log.info('no AUTO PRQs present — nothing dropped');
@@ -44,7 +34,7 @@ function mapPrq(sheet, log) {
       rowsRead: all.length,
       rowsKept: kept.length,
       rowsDropped: dropped,
-      autoPrqsDropped: [...droppedPrqs].sort(),
+      autoPrqsDropped: droppedPrqs,
       prqNumbers: c.values,
       itemNames: d.values,
     },

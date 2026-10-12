@@ -20,6 +20,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { parseArgs: nodeParseArgs } = require('util');
 const { runDailyReport } = require('../pipeline');
 const { runWithPortalPull } = require('../portalRun');
 const { log, logFile, errorLogFile } = require('../core/appdata');
@@ -59,47 +60,34 @@ Command Prompt. Use --out <file> to capture the result, or read the log at:
   %LOCALAPPDATA%\\PharmacyMIS\\logs\\
 `;
 
-const FLAGS = new Set(['--dry-run', '--quiet', '--json', '-h', '--help', '--self-test', '--cli']);
+const OPTIONS = {
+  'dry-run': { type: 'boolean' }, quiet: { type: 'boolean' }, json: { type: 'boolean' },
+  'self-test': { type: 'boolean' }, cli: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+  root: { type: 'string' }, date: { type: 'string' }, inputs: { type: 'string' },
+  prq: { type: 'string' }, po: { type: 'string' }, grn: { type: 'string' },
+  username: { type: 'string' }, out: { type: 'string' }, expect: { type: 'string' },
+};
 
 function parseArgs(argv) {
-  const out = { files: {} };
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (!arg.startsWith('-')) continue;
-
-    if (FLAGS.has(arg)) {
-      if (arg === '--dry-run') out.dryRun = true;
-      else if (arg === '--quiet') out.quiet = true;
-      else if (arg === '--json') out.json = true;
-      else if (arg === '--self-test') out.selfTest = true;
-      else if (arg === '--cli') { /* mode switch only */ }
-      else out.help = true;
-      continue;
-    }
-
-    const value = argv[i + 1];
-    if (value === undefined || value.startsWith('--')) throw new Error(arg + ' needs a value');
-    i += 1;
-
-    switch (arg) {
-      case '--root': out.archiveRoot = path.resolve(value); break;
-      case '--date': out.reportDate = value; break;
-      case '--inputs': out.inputFolder = path.resolve(value); break;
-      case '--prq': out.files.PRQ = path.resolve(value); break;
-      case '--po': out.files.PO = path.resolve(value); break;
-      case '--grn': out.files.GRN = path.resolve(value); break;
-      case '--username': out.username = value; break;
-      case '--out': out.outFile = path.resolve(value); break;
-      case '--expect': out.expect = value; break;
-      default: throw new Error('Unknown option ' + arg);
-    }
-  }
-  return out;
+  const { values: v } = nodeParseArgs({ args: argv, options: OPTIONS, allowPositionals: true });
+  const abs = (p) => (p === undefined ? undefined : path.resolve(p));
+  return {
+    dryRun: v['dry-run'], quiet: v.quiet, json: v.json, selfTest: v['self-test'], help: v.help,
+    archiveRoot: abs(v.root), reportDate: v.date, inputFolder: abs(v.inputs),
+    files: Object.fromEntries(
+      [['PRQ', v.prq], ['PO', v.po], ['GRN', v.grn]].filter(([, p]) => p).map(([k, p]) => [k, abs(p)]),
+    ),
+    username: v.username, outFile: abs(v.out), expect: v.expect,
+  };
 }
 
 /** Write to stdout if there is anywhere for it to go, and always to the log. */
 function say(line) {
   try { process.stdout.write(line + '\n'); } catch { /* no console attached */ }
+}
+
+function fmtEntry(e) {
+  return e.level.toUpperCase().padEnd(5) + ' ' + '  '.repeat(e.indent || 0) + e.message;
 }
 
 function writeOut(file, payload) {
@@ -121,7 +109,7 @@ async function runCli(opts) {
     : (entry) => {
       if (opts.quiet && !['warn', 'error', 'ok'].includes(entry.level)) return;
       if (entry.level === 'debug') return;
-      say(entry.level.toUpperCase().padEnd(5) + ' ' + '  '.repeat(entry.indent || 0) + entry.message);
+      say(fmtEntry(entry));
     };
 
   // The portal pull always needs an explicit date (there is no inputs
@@ -162,9 +150,7 @@ async function runCli(opts) {
         'Report date:      ' + (result.date || opts.reportDate || '(could not be resolved)'),
         'Inputs folder:    ' + (opts.username ? '(Amrita HIS portal pull)' : (opts.inputFolder || '(not set)')),
       ].join('\n'),
-      (result.log || [])
-        .map((e) => e.level.toUpperCase().padEnd(5) + ' ' + '  '.repeat(e.indent || 0) + e.message)
-        .join('\n'),
+      (result.log || []).map(fmtEntry).join('\n'),
     );
     const where = errorLogFile();
     if (where) say('details written to ' + where);
@@ -375,15 +361,9 @@ async function withServer(fn, record) {
   }
 }
 
-function httpGet(url) {
-  return new Promise((resolve, reject) => {
-    require('http').get(url, (res) => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (c) => { body += c; });
-      res.on('end', () => resolve({ status: res.statusCode, body }));
-    }).on('error', reject);
-  });
+async function httpGet(url) {
+  const res = await fetch(url);
+  return { status: res.status, body: await res.text() };
 }
 
 /* ------------------------------------------------------------------ *
@@ -426,4 +406,4 @@ async function run(argv, app) {
   }
 }
 
-module.exports = { run, parseArgs, USAGE };
+module.exports = { run };

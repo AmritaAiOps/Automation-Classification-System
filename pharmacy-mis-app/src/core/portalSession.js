@@ -68,15 +68,6 @@ function get() {
   return current ? current.session : null;
 }
 
-/** Take ownership of the open session — the caller is now responsible for closing it. */
-function take() {
-  if (!current) return null;
-  const taken = current;
-  current = null;
-  detach(taken);
-  return { session: taken.session, username: taken.username };
-}
-
 /** Close the open session, if any (sign out, a fresh sign-in replacing it, the portal signing it out, or app shutdown). */
 async function clear() {
   if (!current) return;
@@ -90,4 +81,4 @@ function detach(entry) {
   try { entry.session.browser.off('disconnected', entry.onDisconnect); } catch { /* browser already gone */ }
 }
 
-module.exports = { set, isActive, activeUsername, get, take, clear, onEnded };
+module.exports = { set, isActive, activeUsername, get, clear, onEnded };

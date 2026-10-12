@@ -28,23 +28,15 @@ const APP_DIR_NAME = 'PharmacyMIS';
 const LOG_RETENTION_DAYS = 30;
 
 function baseDir() {
-  const candidates = [
-    process.env.LOCALAPPDATA,
-    process.env.APPDATA,
-    os.homedir() ? path.join(os.homedir(), 'AppData', 'Local') : null,
-    os.tmpdir(),
-  ].filter(Boolean);
-
-  for (const root of candidates) {
+  const roots = [process.env.LOCALAPPDATA, path.join(os.homedir(), 'AppData', 'Local'), os.tmpdir()];
+  for (const root of roots.filter(Boolean)) {
     const dir = path.join(root, APP_DIR_NAME);
     try {
       fs.mkdirSync(dir, { recursive: true });
       return dir;
-    } catch {
-      // try the next candidate
-    }
+    } catch { /* try the next candidate */ }
   }
-  // os.tmpdir() failing too means the machine has no writable location at all.
+  // Nothing writable at all: hand back the last resort and let the writers report it.
   return path.join(os.tmpdir(), APP_DIR_NAME);
 }
 
@@ -54,49 +46,39 @@ function appDir() {
   return cachedBase;
 }
 
-function logDir() {
-  const dir = path.join(appDir(), 'logs');
+function subDir(name) {
+  const dir = path.join(appDir(), name);
   try { fs.mkdirSync(dir, { recursive: true }); } catch { /* reported by the writer */ }
   return dir;
-}
-
-function todayStamp() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function logFile() {
-  return path.join(logDir(), `pharmacy-mis-${todayStamp()}.log`);
-}
-
-/** Drop logs older than the retention window, so the folder cannot grow without bound. */
-function pruneOldLogs() {
-  try {
-    const cutoff = Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    for (const name of fs.readdirSync(logDir())) {
-      if (!/^pharmacy-mis-\d{4}-\d{2}-\d{2}\.log$/.test(name)) continue;
-      const full = path.join(logDir(), name);
-      if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
-    }
-  } catch { /* housekeeping only — never fatal */ }
+  return path.join(subDir('logs'), `pharmacy-mis-${new Date().toLocaleDateString('en-CA')}.log`);
 }
 
 function screenshotDir() {
-  const dir = path.join(appDir(), 'screenshots');
-  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* reported by the writer */ }
-  return dir;
+  return subDir('screenshots');
 }
 
-/** Drop failure screenshots older than the retention window, same as pruneOldLogs(). */
-function pruneOldScreenshots() {
+/** Drop files in `dir` matching `pattern` older than the retention window. */
+function pruneDir(dir, pattern) {
   try {
     const cutoff = Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    for (const name of fs.readdirSync(screenshotDir())) {
-      if (!/^failure_.+\.png$/.test(name)) continue;
-      const full = path.join(screenshotDir(), name);
+    for (const name of fs.readdirSync(dir)) {
+      if (!pattern.test(name)) continue;
+      const full = path.join(dir, name);
       if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full);
     }
-  } catch { /* housekeeping only — never fatal */ }
+  } catch { /* housekeeping only - never fatal */ }
+}
+
+/** Keep the log folder from growing without bound. */
+function pruneOldLogs() {
+  pruneDir(subDir('logs'), /^pharmacy-mis-\d{4}-\d{2}-\d{2}\.log$/);
+}
+
+function pruneOldScreenshots() {
+  pruneDir(screenshotDir(), /^failure_.+\.png$/);
 }
 
 /* ------------------------------------------------------------------ *
@@ -125,18 +107,10 @@ function documentsDir() {
   const candidates = [];
   try {
     // Electron knows the real, possibly redirected, Documents folder.
-    // eslint-disable-next-line global-require
     candidates.push(require('electron').app.getPath('documents'));
   } catch { /* not running under Electron, or too early to ask */ }
-
-  const home = os.homedir();
-  if (home) candidates.push(path.join(home, 'Documents'));
-  if (process.env.USERPROFILE) candidates.push(path.join(process.env.USERPROFILE, 'Documents'));
-
-  for (const dir of candidates) {
-    if (dir && fs.existsSync(dir)) return dir;
-  }
-  return candidates.find(Boolean) || null;
+  candidates.push(path.join(os.homedir(), 'Documents'));
+  return candidates.find((dir) => dir && fs.existsSync(dir)) || candidates.find(Boolean) || null;
 }
 
 /** The customer-facing error log. Null when there is nowhere to put it. */
@@ -215,22 +189,14 @@ const log = {
    * extra context, included in the Documents copy only.
    */
   error: (m, detail) => writeLog('error', m, detail),
-  file: logFile,
-  dir: logDir,
-  errorFile: errorLogFile,
-  documents: documentsDir,
 };
 
 module.exports = {
   appDir,
-  logDir,
   logFile,
   log,
   pruneOldLogs,
   screenshotDir,
   pruneOldScreenshots,
-  documentsDir,
   errorLogFile,
-  writeErrorLog,
-  APP_DIR_NAME,
 };
