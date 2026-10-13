@@ -1,11 +1,17 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { version } = require('../../package.json');
 const { runDailyReport } = require('../pipeline');
-const { pickFolder, pickFile, revealInExplorer, openWithDefaultApp } = require('./dialogs');
-const { resolveLayout, dateFromName, getPreviousCalendarDay, getToday, formatPortalDate } = require('../core/paths');
+const { pickFolder, pickFile, revealInExplorer, openWithDefaultApp, openUrl } = require('./dialogs');
+const { resolveLayout, dateFromName, dateRange, getPreviousCalendarDay, getToday, formatPortalDate } = require('../core/paths');
+const credentials = require('../core/credentials');
+const { loadConfig, saveConfig, ensureConfigFile } = require('../core/config');
+const reportFiles = require('../core/reportFiles');
 const { page } = require('./page');
 const { log } = require('../core/appdata');
 const { loadSettings, saveSettings, rememberUsername } = require('../core/settings');
@@ -136,6 +142,47 @@ function logRunOutcome(result, archiveRoot, reportDate, inputFolder) {
   );
 }
 
+/** One plain sentence for the window: first line only, no stack trace, capped in length. */
+function plainError(err) {
+  const text = errMessage(err).split('\n')[0].trim();
+  return text.length > 300 ? text.slice(0, 297) + '…' : text;
+}
+
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+
+/**
+ * Tab 2 drag-and-drop. The page cannot read a dropped file's path, so the file's
+ * bytes arrive as the request body, are written to a temp file, and go through
+ * exactly the same check-and-store as the "Select file…" button.
+ */
+async function receiveDroppedFile(req, url) {
+  const q = url.searchParams;
+  const [archiveRoot, date, key] = [q.get('archiveRoot'), q.get('date'), q.get('key')];
+  if (!archiveRoot) throw new Error('Choose the Input Output Files folder first.');
+  if (!date || !key) throw new Error('Nothing to save the file as — pick a date and a report.');
+  const layout = resolveLayout(archiveRoot, date);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-mis-drop-'));
+  const tmp = path.join(dir, path.basename(q.get('name') || 'upload'));
+  try {
+    await new Promise((resolve, reject) => {
+      const out = fs.createWriteStream(tmp);
+      let size = 0;
+      req.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > MAX_UPLOAD_BYTES) { reject(new Error('That file is too large to be one of these reports.')); out.destroy(); }
+      });
+      req.on('error', reject);
+      out.on('error', reject);
+      out.on('finish', resolve);
+      req.pipe(out);
+    });
+    return await reportFiles.acceptFile(tmp, layout, key);
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* temp folder, cleaned by the OS eventually */ }
+  }
+}
+
 const routes = {
   /** Manual / preview run — files already pulled or exported by hand. Unchanged from before the Amrita HIS integration. */
   async 'POST /api/run'(body) {
@@ -177,9 +224,19 @@ const routes = {
    */
   async 'POST /api/login'(body) {
     if (runInFlight) throw new Error('A run is already in progress.');
-    if (!body.username || !body.password) throw new Error('Amrita HIS username and password are required.');
+    if (!body.username) throw new Error('Amrita HIS username and password are required.');
 
-    const credentials = { username: body.username, password: body.password };
+    // An empty password field means "use the saved login", but only for the
+    // username it was saved for. The saved password is decrypted here, in this
+    // process, and never leaves it.
+    let password = body.password;
+    if (!password) {
+      const saved = credentials.load();
+      if (saved && saved.username === body.username) password = saved.password;
+    }
+    if (!password) throw new Error('Amrita HIS username and password are required.');
+
+    const login = { username: body.username, password };
 
     broadcast('login-start', { at: new Date().toISOString() });
     // eslint-disable-next-line global-require
@@ -191,11 +248,24 @@ const routes = {
           + 'Install it (npm install puppeteer) to enable the Amrita HIS automation.',
         );
       }
-      const session = await scraper.startSession(credentials, makeLogger((entry) => broadcast('log', entry)));
+      const session = await scraper.startSession(login, makeLogger((entry) => broadcast('log', entry)), { headless: !!body.headless });
       await portalSession.set(session, body.username);
 
       if (body.rememberUsername) rememberUsername(body.username);
       else if (body.rememberUsername === false) rememberUsername('');
+      saveSettings({ headless: body.headless ? '1' : '0' });
+
+      // Only after a successful sign-in, so a wrong password is never saved.
+      try {
+        if (body.rememberPassword) {
+          if (credentials.save(body.username, password)) rememberUsername(body.username);
+          else log.warn('"Remember password" was ticked but this PC cannot encrypt it, so nothing was saved');
+        } else if (body.rememberPassword === false) {
+          credentials.forget();
+        }
+      } catch (err) {
+        log.warn('could not update the saved login: ' + errMessage(err));
+      }
 
       broadcast('login-end', { ok: true });
       return { ok: true };
@@ -213,6 +283,170 @@ const routes = {
       return payload;
     }
   },
+
+  /**
+   * Where each of the three files stands for every day in the range: missing,
+   * valid, or present-but-invalid. Both tabs fill the same folders, so this one
+   * answer drives the status bar, the per-file ticks, and "Proceed to Report".
+   */
+  async 'POST /api/files/status'(body) {
+    if (!body.archiveRoot) return { ok: true, dates: [], allReady: false };
+    const days = dateRange(body.from, body.to);
+    const dates = [];
+    for (const d of days) {
+      const layout = resolveLayout(body.archiveRoot, d.iso);
+      const files = await reportFiles.dayStatus(layout);
+      dates.push({ iso: d.iso, dmy: d.dmy, folder: layout.dayInputsDir, files, ready: files.every((f) => f.state === 'valid') });
+    }
+    return { ok: true, dates, allReady: dates.length > 0 && dates.every((d) => d.ready) };
+  },
+
+  /** Tab 2, "Select file…": check the file at this path and, only if it passes, move it into the day's folder. */
+  async 'POST /api/files/accept'(body) {
+    if (!body.archiveRoot) throw new Error('Choose the Input Output Files folder first.');
+    if (!body.path) throw new Error('No file was chosen.');
+    return reportFiles.acceptFile(body.path, resolveLayout(body.archiveRoot, body.date), body.key);
+  },
+
+  /** Tab 2, "Open HIS": the HIS address from the settings file, in the operator's own browser. */
+  async 'POST /api/his/open'() {
+    await openUrl(loadConfig().hisUrl);
+    return { ok: true };
+  },
+
+  /**
+   * Tab 1, "Run Extraction": every report for every day in the range, one at a
+   * time through the signed-in session. A failed report is retried (settings:
+   * `retries`, default 2), then flagged — and the rest still run. Progress goes
+   * out as 'file-progress' events. A signed-out session stops the whole thing,
+   * because nothing after it could work.
+   */
+  async 'POST /api/extract'(body) {
+    if (runInFlight) throw new Error('A run is already in progress.');
+    if (!portalSession.isActive()) throw new Error('Not signed in to Amrita HIS. Sign in to use automatic extraction.');
+    if (!body.archiveRoot) throw new Error('Choose the Input Output Files folder first.');
+    const days = dateRange(body.from, body.to);
+    const wanted = Array.isArray(body.keys) && body.keys.length ? body.keys : null;
+    const defs = reportFiles.FILES.filter((f) => !wanted || wanted.includes(f.key));
+
+    runInFlight = true;
+    const session = portalSession.get();
+    const attempts = 1 + loadConfig().retries;
+    const sink = (entry) => broadcast('log', entry);
+    const logger = makeLogger(sink);
+    const summary = [];
+    let sessionLost = false;
+
+    broadcast('extract-start', { at: new Date().toISOString(), dates: days.map((d) => d.iso), keys: defs.map((f) => f.key) });
+    try {
+      // eslint-disable-next-line global-require
+      const scraper = require('../scraper');
+      outer:
+      for (const day of days) {
+        const layout = resolveLayout(body.archiveRoot, day.iso);
+        for (const def of defs) {
+          let outcome = null;
+          for (let attempt = 1; attempt <= attempts && !outcome; attempt += 1) {
+            broadcast('file-progress', { date: day.iso, key: def.key, state: 'running', attempt, of: attempts });
+            try {
+              const got = await scraper.runOneReport(session, { layout, key: def.key }, logger);
+              if (got.empty) {
+                outcome = { state: 'failed', error: 'The portal has no data for this date, so there is no file to save.' };
+                break;
+              }
+              const check = await reportFiles.validateFile(got.path, def.key);
+              if (!check.ok) throw new Error('The downloaded file did not pass the check: ' + check.error);
+              outcome = { state: 'done', rows: check.rows };
+            } catch (err) {
+              const message = plainError(err);
+              if (LOGIN_FAILURE.test(message) || !session.browser.connected) {
+                sessionLost = true;
+                outcome = { state: 'failed', error: message, screenshot: err.screenshot || null };
+              } else if (attempt < attempts) {
+                logger.warn(`${def.label} (${day.dmy}) failed: ${message} — trying again (${attempt + 1} of ${attempts})`);
+                broadcast('file-progress', { date: day.iso, key: def.key, state: 'retrying', attempt, of: attempts, error: message });
+              } else {
+                outcome = { state: 'failed', error: message, screenshot: err.screenshot || null };
+              }
+            }
+          }
+          broadcast('file-progress', { date: day.iso, key: def.key, ...outcome });
+          summary.push({ date: day.iso, key: def.key, ...outcome });
+          if (outcome.state === 'failed') log.warn(`extraction: ${def.label} for ${day.iso} failed: ${outcome.error}`);
+          if (sessionLost) break outer;
+        }
+      }
+      if ((sessionLost || !session.browser.connected) && portalSession.get() === session) await portalSession.clear();
+      const result = {
+        ok: !sessionLost && summary.length > 0 && summary.every((r) => r.state === 'done'),
+        sessionLost,
+        done: summary.filter((r) => r.state === 'done').length,
+        failed: summary.filter((r) => r.state === 'failed').length,
+        signedIn: portalSession.isActive(),
+      };
+      broadcast('extract-end', result);
+      return result;
+    } finally {
+      runInFlight = false;
+    }
+  },
+
+  /**
+   * "Proceed to Report": run the existing mapping pipeline on every day in the
+   * range, from the files the two tabs left in each day's folder. Refused unless
+   * every file for every day is present and valid — re-checked here rather than
+   * trusting the window.
+   */
+  async 'POST /api/proceed'(body) {
+    if (runInFlight) throw new Error('A run is already in progress.');
+    if (!body.archiveRoot) throw new Error('Choose the Input Output Files folder first.');
+    const days = dateRange(body.from, body.to);
+    for (const day of days) {
+      const files = await reportFiles.dayStatus(resolveLayout(body.archiveRoot, day.iso));
+      const notReady = files.filter((f) => f.state !== 'valid').map((f) => reportFiles.byKey(f.key).label);
+      if (notReady.length) throw new Error(`${day.dmy}: not ready yet — ${notReady.join(', ')}.`);
+    }
+
+    runInFlight = true;
+    broadcast('run-start', { at: new Date().toISOString(), dryRun: !!body.dryRun, usingPortal: false });
+    try {
+      const results = [];
+      for (const day of days) {
+        const result = await runDailyReport(
+          { archiveRoot: body.archiveRoot, reportDate: day.iso, dryRun: !!body.dryRun },
+          (entry) => broadcast('log', entry),
+        );
+        logRunOutcome(result, body.archiveRoot, day.iso, null);
+        results.push({ day, result });
+      }
+      const failed = results.filter((r) => !r.result.ok);
+      const final = failed.length
+        ? { ok: false, error: failed.map((r) => `${r.day.dmy}: ${r.result.error}`).join(' | '), log: [] }
+        : { ...results[results.length - 1].result, daysProcessed: results.length };
+      broadcast('run-end', final);
+      return final;
+    } finally {
+      runInFlight = false;
+    }
+  },
+
+  /** The Settings screen: the HIS address and the retry count (selectors stay in the file). */
+  async 'POST /api/config'(body) {
+    const saved = saveConfig({ hisUrl: body.hisUrl, retries: body.retries });
+    return { ok: true, config: { hisUrl: saved.hisUrl, retries: saved.retries } };
+  },
+
+  async 'POST /api/config/reveal'() {
+    await revealInExplorer(ensureConfigFile());
+    return { ok: true };
+  },
+
+  /** "Forget saved login": delete the encrypted password. */
+  async 'POST /api/credentials/forget'() {
+    credentials.forget();
+    return { ok: true };
+  },
+
 
   /**
    * The Logout button: sign the current Amrita HIS account out, close its
@@ -376,6 +610,13 @@ const routes = {
       // localStorage and so were lost every launch — the server picks a new
       // port each time, and that made a new empty store each time.
       settings: loadSettings(),
+      // Never the password — only that one is saved, and for whom.
+      savedLogin: credentials.status(),
+      config: { hisUrl: loadConfig().hisUrl, retries: loadConfig().retries, file: ensureConfigFile() },
+      defaults: { from: getPreviousCalendarDay().iso, to: getPreviousCalendarDay().iso },
+      files: reportFiles.FILES.map((f) => ({
+        key: f.key, label: f.label, feeds: f.feeds, steps: reportFiles.instructionsFor(f),
+      })),
     };
   },
 
@@ -417,6 +658,12 @@ function createServer() {
       streams.add(res);
       keepAlive = keepAlive || setInterval(ping, 15000);
       req.on('close', () => dropStream(res));
+      return;
+    }
+
+    if (key === 'POST /api/files/drop') {
+      try { json(res, 200, await receiveDroppedFile(req, url)); }
+      catch (err) { json(res, 400, { error: errMessage(err) }); }
       return;
     }
 

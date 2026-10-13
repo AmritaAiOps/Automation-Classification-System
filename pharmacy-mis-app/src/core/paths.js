@@ -130,6 +130,22 @@ function dateFromName(name) {
   return null;
 }
 
+/**
+ * Every calendar day from `from` to `to` inclusive, as parseReportDate() objects.
+ * `to` defaults to `from`. Capped so a mistyped year cannot start a months-long run.
+ */
+function dateRange(from, to, maxDays = 31) {
+  const a = parseReportDate(from);
+  const b = parseReportDate(to || from);
+  if (b.date < a.date) throw new Error('The "To" date is before the "From" date.');
+  const days = [];
+  for (let t = a.date.getTime(); t <= b.date.getTime(); t += 86400000) {
+    days.push(fromDate(new Date(new Date(t).getUTCFullYear(), new Date(t).getUTCMonth(), new Date(t).getUTCDate())));
+    if (days.length > maxDays) throw new Error(`Please pick at most ${maxDays} days at a time.`);
+  }
+  return days;
+}
+
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
   return dir;
@@ -138,6 +154,7 @@ function ensureDir(dir) {
 module.exports = {
   resolveLayout,
   parseReportDate,
+  dateRange,
   dateFromName,
   ensureDir,
   getPreviousCalendarDay,

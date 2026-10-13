@@ -65,4 +65,12 @@ async function openWithDefaultApp(target) {
   if (problem) throw new Error('Could not open ' + path.basename(target) + ': ' + problem);
 }
 
-module.exports = { pickFolder, pickFile, revealInExplorer, openWithDefaultApp };
+/** Open a web page in the operator's normal browser (the "Open HIS" button). Only http(s). */
+async function openUrl(url) {
+  let parsed;
+  try { parsed = new URL(String(url)); } catch { throw new Error('The HIS URL in Settings is not a valid address.'); }
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error('The HIS URL in Settings must start with http:// or https://');
+  await electron().shell.openExternal(parsed.href);
+}
+
+module.exports = { pickFolder, pickFile, revealInExplorer, openWithDefaultApp, openUrl };

@@ -67,7 +67,7 @@ function page(token) {
   .badge.off  { color: var(--ink-faint); }
 
   /* ---- layout ---- */
-  main { display: grid; grid-template-columns: 380px minmax(0, 1fr); min-height: 0; }
+  main { display: grid; grid-template-columns: 440px minmax(0, 1fr); min-height: 0; }
   .left  { border-right: 1px solid var(--line); overflow-y: auto; padding: 14px; }
   .right { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; min-height: 0; }
 
@@ -242,6 +242,84 @@ function page(token) {
   .summary .k { color: var(--ink-faint); }
   .summary .v { color: var(--ok); font-weight: 600; text-align: right; }
   .summary .v.big { color: var(--accent); font-size: 15px; }
+
+  /* ---- Get the files: dates, tabs, per-file rows ---- */
+  input[type=date] { color-scheme: dark; }
+  .daterow { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 10px; }
+  .daterow label { flex: 1; min-width: 0; font-size: 12px; color: var(--ink-dim); }
+  .daterow label span { display: block; margin-bottom: 4px; }
+  .daterow label input { width: 100%; }
+  .dateview { display: flex; align-items: center; gap: 8px; margin: -2px 0 10px; font-size: 12px; color: var(--ink-dim); }
+  .dateview select {
+    background: var(--bg-deep); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font: 12px var(--mono);
+  }
+  button.small { padding: 4px 9px; font-size: 11px; }
+  .filelist { margin-top: 10px; }
+  .filerow {
+    background: var(--bg-deep); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 10px; margin-top: 8px; transition: border-color .15s, background .15s;
+  }
+  .filerow.drag { border-color: var(--accent); background: #10202f; }
+  .filerow.flash { animation: flash 2.6s ease-out; }
+  @keyframes flash { 0%, 55% { border-color: var(--warn); background: #272113; } 100% { border-color: var(--line); background: var(--bg-deep); } }
+  .fhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .fname { font-size: 12px; font-weight: 600; min-width: 0; }
+  .fmsg { font-size: 11px; color: var(--ink-faint); margin-top: 5px; word-break: break-word; }
+  .fmsg.err { color: var(--err); }
+  .factions { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .drophint { font-size: 11px; color: var(--ink-faint); }
+  .filerow details { margin-top: 6px; font-size: 11px; color: var(--ink-dim); }
+  .filerow summary { cursor: pointer; color: var(--ink-faint); user-select: none; }
+  .filerow summary:hover { color: var(--accent); }
+  .filerow ol { margin: 6px 0 0; padding-left: 18px; line-height: 1.6; }
+  .chip {
+    font-size: 10px; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    border: 1px solid var(--line); color: var(--ink-dim); background: var(--bg-bar);
+  }
+  .chip.running { color: var(--warn); border-color: #5b4a22; }
+  .chip.done    { color: var(--ok);   border-color: #2c5b45; }
+  .chip.failed  { color: var(--err);  border-color: #6a3a3a; }
+
+  /* ---- readiness bar ---- */
+  .readybar { margin-bottom: 10px; }
+  .rb-day {
+    display: flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 5px;
+    font: 11px var(--mono); color: var(--ink-dim); cursor: pointer;
+  }
+  .rb-day > span:first-child { flex: 1; }
+  .rb-day.sel { background: var(--panel-2); }
+  .mini { padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line); font-size: 10px; }
+  .mini.ok   { color: var(--ok);   border-color: #2c5b45; }
+  .mini.miss { color: var(--warn); border-color: #5b4a22; }
+  .mini.bad  { color: var(--err);  border-color: #6a3a3a; }
+  .rb-note { font-size: 11px; color: var(--ink-faint); padding: 4px 7px 0; }
+  .rb-note.ok { color: var(--ok); }
+
+  /* ---- sign-in extras + settings ---- */
+  /* Once past the sign-in screen the long explanation is just in the way. */
+  body:not(.locked) #loginHint { display: none; }
+  button.link {
+    background: none; border: 0; padding: 0; color: var(--ink-faint); font-size: 11px;
+    text-decoration: underline; cursor: pointer; margin: 2px 0 8px;
+  }
+  button.link:hover { color: var(--accent); }
+  .modal {
+    position: fixed; inset: 0; background: rgba(5, 8, 12, .65);
+    display: flex; align-items: center; justify-content: center; z-index: 10;
+  }
+  .modal .box {
+    width: 440px; max-width: calc(100% - 32px); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px;
+  }
+  .modal input[type=text] { width: 100%; }
+  .modal h3 { margin: 0 0 12px; font-size: 14px; }
+  .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  .modal .msg { font-size: 12px; color: var(--err); min-height: 16px; margin-top: 8px; }
+  input[type=number] {
+    background: var(--bg-deep); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 9px; font: 12px var(--mono); width: 90px;
+  }
 </style>
 </head>
 <body class="locked">
@@ -254,6 +332,7 @@ function page(token) {
     <span class="who" id="sessionWho"></span>
     <button class="logout" id="logoutBtn" title="Log out of Amrita HIS and return to the sign-in screen">Logout</button>
   </div>
+  <button class="ghost small" id="settingsBtn" title="HIS address and retries">Settings</button>
   <span class="badge off" id="scraperBadge">portal pull: checking…</span>
   <span class="badge" id="connBadge">connecting…</span>
 </header>
@@ -275,22 +354,29 @@ function page(token) {
           <input type="checkbox" id="rememberUsername" checked>
           Remember username
         </label>
+        <label class="checkline">
+          <input type="checkbox" id="rememberPassword">
+          Remember password on this PC <span class="hint" style="margin:0">(encrypted)</span>
+        </label>
+        <button class="link" id="forgetLogin" hidden>Forget saved login</button>
+        <label class="checkline">
+          <input type="checkbox" id="headless">
+          Run the browser in the background
+        </label>
         <button class="primary" id="signInBtn">Sign In</button>
-        <button class="ghost wide" id="manualModeBtn">Continue without signing in — manual run</button>
+        <button class="ghost wide" id="manualModeBtn">Continue without signing in — manual only</button>
       </div>
       <div id="runFields" hidden>
         <div class="login-status ok" id="signedInAs"></div>
-        <button class="primary" id="runPortalBtn">Run</button>
       </div>
       <div class="login-status" id="loginStatus"></div>
-      <div class="summary" id="runSummary" hidden></div>
       <p class="hint" id="loginHint">
-        Puppeteer signs in to Amrita HIS with these credentials — nothing to type into a browser
-        window yourself. Once signed in and verified, <b>Run</b> pulls the day's reports.
+        Once signed in, <b>Automatic</b> downloads the three reports for you, with a live status for
+        each file. A saved password is encrypted with Windows and works only for your Windows user
+        on this PC.
         <br><br>
-        No credentials, or the reports already exported by hand? <b>Continue without signing in</b>
-        opens the same dashboard for a manual run — it maps the three reports from a folder you
-        already have and writes the same master row, it just fetches nothing from the portal.
+        Prefer to download the files yourself? <b>Continue without signing in</b> opens the
+        <b>Manual</b> tab, which checks and files what you download.
       </p>
     </section>
 
@@ -307,60 +393,46 @@ function page(token) {
     </section>
 
     <section class="card">
-      <h2>2 · Source files</h2>
+      <h2>2 · Get the files</h2>
+      <div class="daterow">
+        <label><span>From</span><input type="date" id="dateFrom"></label>
+        <label><span>To</span><input type="date" id="dateTo"></label>
+        <button class="ghost" id="yesterdayBtn" title="Reset both dates to yesterday">Yesterday</button>
+      </div>
+      <div class="dateview" id="dateViewRow" hidden>
+        <span>Showing</span><select id="dateView"></select>
+      </div>
+
       <div class="tabs" role="tablist">
-        <button role="tab" id="tabFolder" aria-selected="true">Inputs folder</button>
-        <button role="tab" id="tabFiles" aria-selected="false">Pick files</button>
+        <button role="tab" id="tabAuto" aria-selected="true">Automatic</button>
+        <button role="tab" id="tabManual" aria-selected="false">Manual</button>
       </div>
 
-      <div id="paneFolder">
-        <label class="field">
-          <span>Dated inputs folder</span>
-          <div class="row">
-            <input type="text" id="inputFolder" placeholder="…\\inputs\\2026-08-08">
-            <button id="pickInput">Browse…</button>
-          </div>
-        </label>
-        <p class="hint">
-          Every <code>.csv</code>/<code>.xlsx</code> in the folder is read and identified by its
-          <b>column layout</b>, so filenames do not matter. Left blank, the conventional
-          <code>inputs/DD-MM-YYYY</code> folder under the Input Output Files folder is used.
-        </p>
+      <div id="paneAuto">
+        <p class="hint flush" id="autoNote"></p>
+        <button class="primary" id="runExtractBtn">Run Extraction</button>
+        <div class="filelist" id="autoList"></div>
       </div>
 
-      <div id="paneFiles" hidden>
-        <label class="field">
-          <span>PRQ Details → columns C, D</span>
-          <div class="row"><input type="text" id="filePRQ" placeholder="not selected"><button data-pick="PRQ">…</button></div>
-        </label>
-        <label class="field">
-          <span>PO Detail Report → columns E, F, G</span>
-          <div class="row"><input type="text" id="filePO" placeholder="not selected"><button data-pick="PO">…</button></div>
-        </label>
-        <label class="field">
-          <span>Purchase Report / GRN → columns H, I, J</span>
-          <div class="row"><input type="text" id="fileGRN" placeholder="not selected"><button data-pick="GRN">…</button></div>
-        </label>
-        <p class="hint">
-          Slots are a convenience only — each file is still verified against its column layout,
-          so a file put in the wrong slot is placed correctly anyway.
+      <div id="paneManual" hidden>
+        <p class="hint flush">
+          Download each report in the HIS yourself, then add it here for <b id="manualDate">—</b>.
+          Each file is checked, then saved with the same name and in the same folder as Automatic.
         </p>
+        <div class="filelist" id="manualList"></div>
       </div>
     </section>
 
     <section class="card">
-      <h2>3 · Run (manual / preview)</h2>
-      <p class="hint flush">
-        For files already pulled or exported by hand. The <b>Sign In &amp; Run</b> button above
-        is the normal path — it pulls straight from Amrita HIS and runs this same pipeline.
-      </p>
+      <h2>3 · Report</h2>
+      <div class="readybar" id="readyBar"></div>
       <label class="field dry">
         <span>
           <input type="checkbox" id="dryRun">
           Preview only — do not write the master file
         </span>
       </label>
-      <button class="primary" id="runBtn">Run daily report</button>
+      <button class="primary" id="proceedBtn" disabled>Proceed to Report</button>
       <div class="row gap-top">
         <button id="openMaster" class="ghost flex1" disabled>Open master</button>
         <button id="showMaster" class="ghost flex1" disabled>Show in folder</button>
@@ -388,6 +460,30 @@ function page(token) {
   </div>
 </main>
 
+<div class="modal" id="settingsModal" hidden>
+  <div class="box">
+    <h3>Settings</h3>
+    <label class="field">
+      <span>HIS address</span>
+      <input type="text" id="setHisUrl" spellcheck="false">
+    </label>
+    <label class="field">
+      <span>Retries for a failed file (0–5)</span>
+      <input type="number" id="setRetries" min="0" max="5">
+    </label>
+    <p class="hint">
+      The sign-in form's selectors, and everything else the automation reads, are in the settings
+      file — <button class="link" id="settingsFile">show settings file</button>.
+      The output folder is the Input Output Files box on the main screen.
+    </p>
+    <div class="msg" id="settingsMsg"></div>
+    <div class="actions">
+      <button class="ghost" id="settingsCancel">Cancel</button>
+      <button class="primary" style="width:auto;padding:7px 18px" id="settingsSave">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const TOKEN = ${JSON.stringify(token)};
 
@@ -409,29 +505,36 @@ const api = async (path, body) => {
   return data;
 };
 
+/* ---------- state ---------- */
+let files = [];                // the three reports: { key, label, feeds, steps } — from the server, the one list both tabs share
+let tab = 'auto';              // 'auto' | 'manual'
+let signedIn = false;
+let signingIn = false;
+let pipelineBusy = false;      // the report pipeline is running (Proceed to Report)
+let extracting = false;        // Run Extraction is running
+let progress = {};             // progress[isoDate][key] = latest file-progress event from this session's extraction
+let rowErrors = {};            // rowErrors[isoDate][key] = why the last file handed to Tab 2 was refused
+let status = { dates: [], allReady: false, error: '' };
+let viewIso = null;            // the day the two tabs are showing
+let defaultDates = null;       // { from, to } = yesterday, from the server
+let savedLogin = { available: false, hasPassword: false, username: '' };
+let hisConfig = { hisUrl: '', retries: 2 };
+let openSteps = new Set();     // which "How to get this file" lists are expanded
+let statusSeq = 0;
+let lastMaster = null;
+let signedInUsername = '';
+
+const busy = () => pipelineBusy || extracting;
+const dmy = (iso) => iso.slice(8, 10) + '-' + iso.slice(5, 7) + '-' + iso.slice(0, 4);
+const fileDef = (key) => files.find((f) => f.key === key);
+
 /* ---------- persisted form state (saved on the server — see core/settings.js) ---------- */
 const form = {
   read() {
-    return {
-      archiveRoot: $('archiveRoot').value.trim(),
-      inputFolder: mode === 'folder' ? $('inputFolder').value.trim() : '',
-      files: mode === 'files' ? {
-        PRQ: $('filePRQ').value.trim() || null,
-        PO: $('filePO').value.trim() || null,
-        GRN: $('fileGRN').value.trim() || null,
-      } : {},
-      dryRun: $('dryRun').checked,
-    };
+    return { archiveRoot: $('archiveRoot').value.trim(), dryRun: $('dryRun').checked };
   },
   values() {
-    return {
-      archiveRoot: $('archiveRoot').value,
-      inputFolder: $('inputFolder').value,
-      filePRQ: $('filePRQ').value,
-      filePO: $('filePO').value,
-      fileGRN: $('fileGRN').value,
-      mode,
-    };
+    return { archiveRoot: $('archiveRoot').value, tab };
   },
   /** Debounced save to the server. localStorage is no use: the origin carries a fresh port every launch. */
   save() {
@@ -441,30 +544,11 @@ const form = {
       api('/api/settings', values).catch(() => { /* not remembering is not fatal */ });
     }, 300);
   },
-  /** Fill the form in from whatever was last saved. */
   apply(s) {
     if (!s) return;
     $('archiveRoot').value = s.archiveRoot || '';
-    $('inputFolder').value = s.inputFolder || '';
-    $('filePRQ').value = s.filePRQ || '';
-    $('filePO').value = s.filePO || '';
-    $('fileGRN').value = s.fileGRN || '';
-    if (s.mode) setMode(s.mode);
   },
 };
-
-/* ---------- source mode ---------- */
-let mode = 'folder';
-function setMode(next) {
-  mode = next;
-  $('tabFolder').setAttribute('aria-selected', String(next === 'folder'));
-  $('tabFiles').setAttribute('aria-selected', String(next === 'files'));
-  $('paneFolder').hidden = next !== 'folder';
-  $('paneFiles').hidden = next !== 'files';
-  form.save();
-}
-$('tabFolder').onclick = () => setMode('folder');
-$('tabFiles').onclick = () => setMode('files');
 
 /* ---------- results strip ---------- */
 const FIELDS = [
@@ -578,96 +662,97 @@ function setMessage(id, base, text, kind, link, label) {
 }
 
 const setStatus = (...a) => setMessage('statusMsg', 'msg', ...a);
-function setBusy(busy) {
-  $('spin').hidden = !busy;
-  $('runBtn').disabled = busy;
-  $('runBtn').textContent = busy ? 'Running…' : 'Run daily report';
-  // Duplicate-run protection: only one pipeline write / Puppeteer session at
-  // a time, so every entry point is locked together.
-  pipelineBusy = busy;
-  $('runPortalBtn').disabled = busy;
-  $('runPortalBtn').textContent = busy ? 'Running…' : 'Run';
-  $('logoutBtn').disabled = busy;
-  $('signInBtn').disabled = busy || signingIn;
-  $('manualModeBtn').disabled = busy;
+const setLoginStatus = (...a) => setMessage('loginStatus', 'login-status', ...a);
+
+/** One place that decides which buttons are live, from the signed-in / busy / date state. */
+function applyState() {
+  const b = busy();
+  $('spin').hidden = !b;
+  const rangeProblem = !$('archiveRoot').value.trim() || !!rangeError();
+
+  $('runExtractBtn').disabled = b || !signedIn || rangeProblem;
+  $('runExtractBtn').textContent = extracting ? 'Extracting…' : 'Run Extraction';
+  $('proceedBtn').disabled = b || !status.allReady;
+  $('proceedBtn').textContent = pipelineBusy ? 'Running…' : 'Proceed to Report';
+  $('logoutBtn').disabled = b;
+  $('signInBtn').disabled = b || signingIn;
+  $('manualModeBtn').disabled = b;
+  ['dateFrom', 'dateTo', 'yesterdayBtn'].forEach((id) => { $(id).disabled = b; });
+
+  $('autoNote').textContent = signedIn
+    ? (($('headless').checked ? 'The browser runs in the background.' : 'Edge opens so you can watch.')
+      + ' A file that fails is tried again ' + hisConfig.retries + (hisConfig.retries === 1 ? ' time' : ' times') + ', then flagged and the rest carry on.')
+    : 'Sign in to Amrita HIS (top left) to use automatic extraction — or use the Manual tab.';
 }
 
-/* ---------- Amrita HIS sign-in (two steps: Sign In, then Run) ---------- */
-let signingIn = false;
-let pipelineBusy = false;
-let lastRunWasPortal = false; // which button started the run in flight, for the run-end handler below
+function setBusy(busyNow) {
+  pipelineBusy = busyNow;
+  applyState();
+}
 
-const setLoginStatus = (...a) => setMessage('loginStatus', 'login-status', ...a);
+/* ---------- Amrita HIS sign-in ---------- */
 
 /* Not signed in: sign-in fields shown, Logout hidden. */
 function showLoginFields() {
+  signedIn = false;
   $('loginFields').hidden = false;
   $('runFields').hidden = true;
   $('sessionBox').hidden = true;
+  applyState();
+  renderAll();
 }
-let signedInUsername = '';
-/* Signed in: Run shown, Logout (and who is signed in) visible in the header. */
+/* Signed in: Logout (and who is signed in) visible in the header. */
 function showRunFields(username) {
   signedInUsername = username || signedInUsername;
+  signedIn = true;
   $('loginFields').hidden = true;
   $('runFields').hidden = false;
   $('signedInAs').textContent = '✓ Signed in as ' + signedInUsername + ' — verified';
   $('sessionWho').textContent = signedInUsername;
   $('sessionBox').hidden = false;
+  applyState();
+  renderAll();
 }
 
 /**
- * The Dashboard (archive root, source files, manual run, results, log) stays
- * unreachable — not merely dimmed — until Amrita HIS authentication succeeds
- * at least once this launch (body starts with the "locked" class already on
- * it, before any script runs). Once unlocked it stays unlocked for the rest
- * of this run of the app: re-authenticating for a second day's pull happens
- * through the same login card, now sitting in its normal place in the
- * sidebar, not by re-locking the whole window. The one exception is Logout,
- * which puts the window back in its cold-launch sign-in state (lockDashboard).
+ * The Dashboard stays unreachable — not merely dimmed — until Amrita HIS
+ * authentication succeeds, or "Continue without signing in" is chosen (body
+ * starts with the "locked" class already on it, before any script runs). Once
+ * unlocked it stays unlocked until Logout, which puts the window back in its
+ * cold-launch sign-in state (lockDashboard).
  */
-function unlockDashboard() {
-  document.body.classList.remove('locked');
-}
-function lockDashboard() {
-  document.body.classList.add('locked');
+function unlockDashboard() { document.body.classList.remove('locked'); }
+function lockDashboard() { document.body.classList.add('locked'); }
+
+function setSigningIn(isBusy) {
+  signingIn = isBusy;
+  $('signInBtn').textContent = isBusy ? 'Authenticating…' : 'Sign In';
+  $('hisUsername').disabled = isBusy;
+  $('hisPassword').disabled = isBusy;
+  applyState();
 }
 
-function setSigningIn(busy) {
-  signingIn = busy;
-  $('signInBtn').disabled = busy || pipelineBusy;
-  $('signInBtn').textContent = busy ? 'Authenticating…' : 'Sign In';
-  $('hisUsername').disabled = busy;
-  $('hisPassword').disabled = busy;
-}
+/** Whether the saved login can stand in for the password field, for the username typed. */
+const usingSavedPassword = () => savedLogin.hasPassword && savedLogin.username === $('hisUsername').value.trim();
 
-function renderPortalSummary(result) {
-  const box = $('runSummary');
-  if (!result || !result.portalFiles) { box.hidden = true; box.innerHTML = ''; return; }
-  box.hidden = false;
-  box.innerHTML =
-    '<span class="k">Pharmacy PRQ Details</span><span class="v">✓ Downloaded</span>'
-    + '<span class="k">Purchase Order Detail Report - Pharmacy</span><span class="v">✓ Downloaded</span>'
-    + '<span class="k">Purchase Report Pharmacy Detail</span><span class="v">✓ Downloaded</span>'
-    + '<span class="k">Reports downloaded</span><span class="v big">' + esc(result.portalFiles.length) + '</span>';
+function updateLoginUi() {
+  $('hisPassword').placeholder = usingSavedPassword() ? 'Saved password will be used' : 'Amrita HIS password';
+  $('forgetLogin').hidden = !savedLogin.hasPassword;
+  $('rememberPassword').disabled = !savedLogin.available;
+  $('rememberPassword').parentElement.title = savedLogin.available ? '' : 'This PC cannot encrypt a saved password, so it cannot be remembered.';
+  if (savedLogin.hasPassword) $('rememberPassword').checked = true;
 }
 
 /**
- * The username field must reflect ONLY this app's own remembered value
- * (the server's settings file — never the password), never whatever a
- * browser's or the operating system's own form-autofill decides to suggest
- * for a field named "username"/"password". Both fields are therefore forced to
- * a known state here rather than trusted to already be blank: they are cleared
- * at boot, the username is then set from our own store if there is one, and the
- * password is left empty — nothing in this app ever writes a value into it
- * programmatically.
+ * The username field must reflect ONLY this app's own remembered value (the
+ * server's settings file), never whatever a browser's or the operating
+ * system's form-autofill decides to suggest. Both fields are forced to a known
+ * state here, and the password is left empty — nothing in this app ever writes
+ * a value into it programmatically (a saved password stays on the server).
  */
 function clearLoginFields() {
   $('hisUsername').value = '';
   $('hisPassword').value = '';
-  // Autofill (browser or OS-level) can act asynchronously, after this
-  // function has already run — the password is enforced empty one more time
-  // shortly after, without depending on any one moment being "late enough".
   setTimeout(() => { $('hisPassword').value = ''; }, 400);
 }
 
@@ -677,57 +762,51 @@ function prefillUsername(username) {
   $('rememberUsername').checked = true;
 }
 
+$('hisUsername').oninput = updateLoginUi;
+
 /*
- * The manual half of the app needs no Amrita HIS session at all — /api/run
- * takes files that are already on disk and never touches the portal — so the
- * login card offers a way straight past it. The login card stays where it is
- * in the sidebar afterwards, so a portal pull is still one sign-in away in the
- * same launch; only the button goes, having nothing left to do.
+ * Reports can be saved by hand (Manual tab) with no Amrita HIS session at all,
+ * so the login card offers a way straight past it.
  */
 $('manualModeBtn').onclick = () => {
   unlockDashboard();
   $('manualModeBtn').hidden = true;
-  setLoginStatus('Manual run — sign in above whenever the portal pull is needed.');
+  setTab('manual');
+  setLoginStatus('Manual mode — sign in above whenever automatic extraction is needed.');
 };
 
-/* Step 1: Sign In — authenticates and verifies, but does not pull any report yet. */
 $('signInBtn').onclick = async () => {
   const username = $('hisUsername').value.trim();
   const password = $('hisPassword').value;
 
-  // Sign In only needs credentials — the input/output folder is a
-  // Dashboard setting the user has not even seen yet at this point (the
-  // Dashboard is still locked), so they are chosen after signing in and read
-  // fresh when Run is clicked, not asked for here.
   if (!username) { setLoginStatus('Enter your Amrita HIS username.', 'err'); return; }
-  if (!password) { setLoginStatus('Enter your Amrita HIS password.', 'err'); return; }
+  if (!password && !usingSavedPassword()) { setLoginStatus('Enter your Amrita HIS password.', 'err'); return; }
 
   const payload = {
     username,
     password,
     rememberUsername: $('rememberUsername').checked,
+    rememberPassword: $('rememberPassword').checked,
+    headless: $('headless').checked,
   };
-  // The password has been read into the outgoing request; drop it from the
-  // form and from this closure's reach as soon as it is no longer needed.
+  // The password has been read into the outgoing request; drop it from the form.
   $('hisPassword').value = '';
 
   setSigningIn(true);
   setLoginStatus('Authenticating with Amrita HIS…');
 
   try {
-    // /api/login's JSON response is { ok: true } on success — no "error"
-    // field, so api() resolves normally — or throws with the portal's own
-    // message on failure (see api()'s definition above: any "error" field
-    // makes it throw), which is exactly what the catch below wants.
     await api('/api/login', payload);
     setLoginStatus('✓ Logged in to Amrita HIS — verified', 'ok');
     showRunFields(username);
     unlockDashboard();
+    setTab('auto');
+    try { savedLogin = (await api('/api/status')).savedLogin; } catch (e) { /* keep what we had */ }
+    updateLoginUi();
   } catch (err) {
     // err.message is already a complete, specific sentence (e.g. "Incorrect
-    // username or password.") — no need to prefix it with anything, and the
-    // Dashboard stays locked and the fields stay ready for another attempt
-    // until it reads correctly.
+    // username or password.") — the Dashboard stays locked and the fields stay
+    // ready for another attempt.
     setLoginStatus(
       '✗ ' + err.message + (err.screenshot ? ' — screenshot: ' + err.screenshot : ''),
       'err',
@@ -739,6 +818,18 @@ $('signInBtn').onclick = async () => {
   }
 };
 
+$('forgetLogin').onclick = async () => {
+  try {
+    await api('/api/credentials/forget', {});
+    savedLogin = { ...savedLogin, hasPassword: false };
+    $('rememberPassword').checked = false;
+    updateLoginUi();
+    setLoginStatus('Saved login removed from this PC.', 'ok');
+  } catch (err) {
+    setLoginStatus('✗ Could not remove the saved login: ' + err.message, 'err');
+  }
+};
+
 /*
  * Logout: end the signed-in Amrita HIS account and go back to the sign-in
  * screen so a different account can be used. The server refuses while a run is
@@ -746,13 +837,13 @@ $('signInBtn').onclick = async () => {
  * session state is re-read from the server rather than assumed.
  */
 $('logoutBtn').onclick = async () => {
-  if (pipelineBusy) return;
+  if (busy()) return;
   $('logoutBtn').disabled = true;
   $('logoutBtn').textContent = 'Logging out…';
   try {
     await api('/api/logout', {});
     signedInUsername = '';
-    renderPortalSummary(null);
+    progress = {};
     $('hisPassword').value = ''; // the remembered username, if any, stays
     showLoginFields();
     lockDashboard();
@@ -765,37 +856,7 @@ $('logoutBtn').onclick = async () => {
     await syncSignedInFields();
   } finally {
     $('logoutBtn').textContent = 'Logout';
-    $('logoutBtn').disabled = pipelineBusy;
-  }
-};
-
-/* Step 2: Run — pulls the three Amrita HIS reports through the session Sign In left waiting, for whichever Input Output Files folder is set on the Dashboard right now. The report date is worked out by the app (yesterday), not typed in. */
-$('runPortalBtn').onclick = async () => {
-  const archiveRoot = $('archiveRoot').value.trim();
-  if (!archiveRoot) { setStatus('Choose the Input Output Files folder first.', 'err'); return; }
-
-  lastRunWasPortal = true;
-  setBusy(true);
-  setLoginStatus('Running Amrita HIS automation…', 'ok');
-  renderPortalSummary(null);
-  $('openMaster').disabled = true;
-  $('showMaster').disabled = true;
-
-  try {
-    // The definitive outcome — including a login-vs-automation failure
-    // distinction via result.stage — arrives over the SSE 'run-end' event
-    // (handled in connect() below): /api/run-portal's JSON response also
-    // carries an "error" field on a failed run, which api() treats as a
-    // request failure, so it is not read here at all.
-    // No date is sent: the server works out the day (yesterday) when Run is
-    // clicked, so a session left open overnight never pulls a stale date.
-    await api('/api/run-portal', { archiveRoot });
-  } catch (err) {
-    setBusy(false);
-    setLoginStatus('✗ ' + err.message, 'err', err.docLink, err.docLinkLabel);
-    // A failed run no longer means a lost sign-in — ask the server whether the
-    // Edge session is still open rather than assuming either way.
-    await syncSignedInFields();
+    applyState();
   }
 };
 
@@ -809,26 +870,377 @@ async function syncSignedInFields() {
   }
 }
 
-/* ---------- live event stream ---------- */
-/* Prefix and whether to append the screenshot path, per failed-run stage. */
-const RUN_FAILURE = {
-  login: ['Amrita HIS session problem: ', false],
-  // Stopped during the portal pull itself — the classification stage never
-  // ran, so there is nothing in the master file from this attempt.
-  portal: ['Stopped during the portal pull (classification was not run): ', true],
-  automation: ['Report automation failed: ', true],
+/* ---------- dates ---------- */
+const range = () => ({ from: $('dateFrom').value, to: $('dateTo').value || $('dateFrom').value });
+
+function rangeError() {
+  const r = range();
+  if (!r.from) return 'Pick a From date.';
+  if (r.to < r.from) return 'The To date is before the From date.';
+  return '';
+}
+
+function onDatesChanged() {
+  progress = {};
+  rowErrors = {};
+  refreshPaths();
+  refreshStatus();
+}
+$('dateFrom').onchange = () => {
+  if ($('dateTo').value && $('dateTo').value < $('dateFrom').value) $('dateTo').value = $('dateFrom').value;
+  onDatesChanged();
+};
+$('dateTo').onchange = onDatesChanged;
+$('yesterdayBtn').onclick = () => {
+  if (!defaultDates) return;
+  $('dateFrom').value = defaultDates.from;
+  $('dateTo').value = defaultDates.to;
+  onDatesChanged();
+};
+$('dateView').onchange = () => { viewIso = $('dateView').value; renderAll(); };
+
+/* ---------- tabs ---------- */
+function setTab(next, save) {
+  tab = next;
+  $('tabAuto').setAttribute('aria-selected', String(next === 'auto'));
+  $('tabManual').setAttribute('aria-selected', String(next === 'manual'));
+  $('paneAuto').hidden = next !== 'auto';
+  $('paneManual').hidden = next !== 'manual';
+  if (save !== false) form.save();
+}
+$('tabAuto').onclick = () => setTab('auto');
+$('tabManual').onclick = () => setTab('manual');
+
+/* ---------- what is ready (both tabs write the same folders, so this is shared) ---------- */
+let statusTimer = null;
+function refreshStatus() {
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(loadStatus, 150);
+}
+
+async function loadStatus() {
+  const seq = ++statusSeq;
+  const root = $('archiveRoot').value.trim();
+  const problem = !root ? 'Choose the Input Output Files folder first.' : rangeError();
+  let next;
+  if (problem) {
+    next = { dates: [], allReady: false, error: problem };
+  } else {
+    try { next = { ...(await api('/api/files/status', { archiveRoot: root, ...range() })), error: '' }; }
+    catch (err) { next = { dates: [], allReady: false, error: err.message }; }
+  }
+  if (seq !== statusSeq) return; // a newer request has superseded this one
+  status = next;
+  if (!status.dates.some((d) => d.iso === viewIso)) viewIso = status.dates.length ? status.dates[0].iso : null;
+  renderAll();
+}
+
+/** What to show for one file on one day, combining the folder's contents with this session's live progress. */
+function fileView(iso, key) {
+  const day = status.dates.find((d) => d.iso === iso);
+  const f = day && day.files.find((x) => x.key === key);
+  const p = (progress[iso] || {})[key];
+  if (p && (p.state === 'running' || p.state === 'retrying')) return p;
+  if (f && f.state === 'valid') return { state: 'done', rows: f.rows };
+  if (p && p.state === 'failed') return p;
+  if (f && f.state === 'invalid') return { state: 'failed', error: f.error };
+  return { state: extracting ? 'pending' : 'missing' };
+}
+
+function renderAll() {
+  renderDateView();
+  renderAuto();
+  renderManual();
+  renderReadyBar();
+  applyState();
+}
+
+function renderDateView() {
+  const many = status.dates.length > 1;
+  $('dateViewRow').hidden = !many;
+  if (!many) return;
+  $('dateView').innerHTML = status.dates.map((d) =>
+    '<option value="' + d.iso + '"' + (d.iso === viewIso ? ' selected' : '') + '>' + d.dmy + (d.ready ? ' ✓' : '') + '</option>').join('');
+}
+
+const AUTO_LABEL = {
+  pending: ['Pending', 'pending'],
+  missing: ['Pending', 'pending'],
+  running: ['Running', 'running'],
+  retrying: ['Retrying', 'running'],
+  done: ['Done', 'done'],
+  failed: ['Failed', 'failed'],
 };
 
+function renderAuto() {
+  const list = $('autoList');
+  if (!viewIso) { list.innerHTML = '<p class="hint">' + esc(status.error || 'Pick the dates above.') + '</p>'; return; }
+  list.innerHTML = files.map((def) => {
+    const v = fileView(viewIso, def.key);
+    const [text, cls] = AUTO_LABEL[v.state] || AUTO_LABEL.pending;
+    let detail = '';
+    let action = '';
+    if (v.state === 'running') detail = 'Attempt ' + v.attempt + ' of ' + v.of + '…';
+    else if (v.state === 'retrying') detail = 'Failed — trying again. ' + (v.error || '');
+    else if (v.state === 'done') detail = (v.rows != null ? v.rows + ' rows — ' : '') + 'saved';
+    else if (v.state === 'failed') {
+      detail = v.error || 'Failed.';
+      action = '<button class="ghost small" data-manual="' + def.key + '">Switch to manual for this file</button>';
+    }
+    return '<div class="filerow" data-key="' + def.key + '">'
+      + '<div class="fhead"><span class="fname">' + esc(def.label) + '</span><span class="chip ' + cls + '">' + text + '</span></div>'
+      + (detail ? '<div class="fmsg' + (v.state === 'failed' ? ' err' : '') + '">' + esc(detail) + '</div>' : '')
+      + (action ? '<div class="factions">' + action + '</div>' : '')
+      + '</div>';
+  }).join('');
+}
+
+$('autoList').onclick = (e) => {
+  const btn = e.target.closest('button[data-manual]');
+  if (btn) goManual(btn.dataset.manual);
+};
+
+/** One-click hand-off: Tab 1 gave up on a file, so open Tab 2 with that file's row highlighted. */
+function goManual(key) {
+  setTab('manual');
+  renderManual();
+  const row = $('manualList').querySelector('[data-key="' + key + '"]');
+  if (!row) return;
+  openSteps.add(key);
+  const details = row.querySelector('details');
+  if (details) details.open = true;
+  row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  row.classList.add('flash');
+  setTimeout(() => row.classList.remove('flash'), 2600);
+}
+
+function renderManual() {
+  const list = $('manualList');
+  if (!viewIso) { list.innerHTML = '<p class="hint">' + esc(status.error || 'Pick the dates above.') + '</p>'; return; }
+  $('manualDate').textContent = dmy(viewIso);
+  list.innerHTML = files.map((def) => {
+    const day = status.dates.find((d) => d.iso === viewIso);
+    const f = day && day.files.find((x) => x.key === def.key);
+    const refused = (rowErrors[viewIso] || {})[def.key];
+    let chip = '<span class="chip pending">Not provided</span>';
+    let msg = '';
+    if (f && f.state === 'valid') { chip = '<span class="chip done">✓ Valid</span>'; msg = f.rows + ' rows — saved as ' + baseName(f.path); }
+    else if (f && f.state === 'invalid') { chip = '<span class="chip failed">✗ Invalid</span>'; msg = f.error; }
+    if (refused) { chip = '<span class="chip failed">✗ Rejected</span>'; msg = refused; }
+    const bad = (f && f.state === 'invalid') || refused;
+    return '<div class="filerow" data-key="' + def.key + '">'
+      + '<div class="fhead"><span class="fname">' + esc(def.label) + '</span>' + chip + '</div>'
+      + (msg ? '<div class="fmsg' + (bad ? ' err' : '') + '">' + esc(msg) + '</div>' : '')
+      + '<details' + (openSteps.has(def.key) ? ' open' : '') + '><summary>How to get this file</summary><ol>'
+      + def.steps.map((s) => '<li>' + esc(s) + '</li>').join('') + '</ol></details>'
+      + '<div class="factions">'
+      + '<button class="ghost small" data-act="open">Open HIS</button>'
+      + '<button class="small" data-act="select">Select file…</button>'
+      + '<span class="drophint">or drop it here</span>'
+      + '</div></div>';
+  }).join('');
+}
+
+function baseName(p) { return String(p || '').split(/[\\\\/]/).pop(); }
+
+$('manualList').addEventListener('toggle', (e) => {
+  const row = e.target.closest && e.target.closest('[data-key]');
+  if (!row) return;
+  if (e.target.open) openSteps.add(row.dataset.key); else openSteps.delete(row.dataset.key);
+}, true);
+
+$('manualList').onclick = (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  const key = btn.closest('[data-key]').dataset.key;
+  if (btn.dataset.act === 'open') openHis();
+  else selectFileFor(key);
+};
+
+/* Drag a file onto a row. The page cannot see a dropped file's path, so its bytes are sent. */
+['dragenter', 'dragover'].forEach((type) => $('manualList').addEventListener(type, (e) => {
+  const row = e.target.closest && e.target.closest('.filerow');
+  if (!row) return;
+  e.preventDefault();
+  row.classList.add('drag');
+}));
+$('manualList').addEventListener('dragleave', (e) => {
+  const row = e.target.closest && e.target.closest('.filerow');
+  if (row && !row.contains(e.relatedTarget)) row.classList.remove('drag');
+});
+$('manualList').addEventListener('drop', (e) => {
+  const row = e.target.closest && e.target.closest('.filerow');
+  if (!row) return;
+  e.preventDefault();
+  row.classList.remove('drag');
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) dropFileFor(row.dataset.key, file);
+});
+// A file dropped anywhere else must not navigate the window away to it.
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+
+function setRowError(key, message) {
+  rowErrors[viewIso] = rowErrors[viewIso] || {};
+  if (message) rowErrors[viewIso][key] = message; else delete rowErrors[viewIso][key];
+}
+
+function manualPrecheck() {
+  if (!$('archiveRoot').value.trim()) { setStatus('Choose the Input Output Files folder first.', 'err'); return false; }
+  if (!viewIso) { setStatus(status.error || 'Pick the dates first.', 'err'); return false; }
+  return true;
+}
+
+async function afterManualAttempt(key, ok, message) {
+  setRowError(key, ok ? '' : message);
+  setStatus(ok ? '✓ ' + fileDef(key).label + ' saved for ' + dmy(viewIso) + '.' : '✗ ' + message, ok ? 'ok' : 'err');
+  await loadStatus();
+}
+
+async function selectFileFor(key) {
+  if (!manualPrecheck()) return;
+  try {
+    const picked = await api('/api/pick-file', { title: 'Select the ' + fileDef(key).label + ' file' });
+    if (!picked.path) return;
+    await api('/api/files/accept', { archiveRoot: $('archiveRoot').value.trim(), date: viewIso, key, path: picked.path });
+    await afterManualAttempt(key, true);
+  } catch (err) {
+    await afterManualAttempt(key, false, err.message);
+  }
+}
+
+async function dropFileFor(key, file) {
+  if (!manualPrecheck()) return;
+  const q = new URLSearchParams({
+    token: TOKEN, archiveRoot: $('archiveRoot').value.trim(), date: viewIso, key, name: file.name,
+  });
+  try {
+    const res = await fetch('/api/files/drop?' + q.toString(), {
+      method: 'POST',
+      headers: { 'x-app-token': TOKEN, 'content-type': 'application/octet-stream' },
+      body: file,
+    });
+    const data = await res.json().catch(() => ({ error: 'Bad response from the app' }));
+    if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+    await afterManualAttempt(key, true);
+  } catch (err) {
+    await afterManualAttempt(key, false, err.message);
+  }
+}
+
+async function openHis() {
+  try { await api('/api/his/open', {}); }
+  catch (err) { setStatus('✗ Could not open the HIS: ' + err.message, 'err'); }
+}
+
+/* ---------- status bar + Proceed ---------- */
+function renderReadyBar() {
+  const bar = $('readyBar');
+  if (status.error) { bar.innerHTML = '<div class="rb-note">' + esc(status.error) + '</div>'; return; }
+  let ready = 0;
+  const lines = status.dates.map((d) => {
+    const minis = d.files.map((f) => {
+      if (f.state === 'valid') ready += 1;
+      const cls = f.state === 'valid' ? 'ok' : f.state === 'invalid' ? 'bad' : 'miss';
+      const mark = f.state === 'valid' ? '✓ ' : f.state === 'invalid' ? '✗ ' : '';
+      return '<span class="mini ' + cls + '" title="' + esc(fileDef(f.key) ? fileDef(f.key).label : f.key) + '">' + mark + f.key + '</span>';
+    }).join('');
+    return '<div class="rb-day' + (d.iso === viewIso ? ' sel' : '') + '" data-iso="' + d.iso + '"><span>' + d.dmy + '</span>' + minis + '</div>';
+  });
+  const total = status.dates.length * files.length;
+  bar.innerHTML = lines.join('')
+    + '<div class="rb-note' + (status.allReady ? ' ok' : '') + '">'
+    + (status.allReady ? '✓ All ' + total + ' files are ready.' : ready + ' of ' + total + ' files ready — Proceed unlocks when every file is valid.')
+    + '</div>';
+}
+$('readyBar').onclick = (e) => {
+  const day = e.target.closest('.rb-day');
+  if (day) { viewIso = day.dataset.iso; renderAll(); }
+};
+
+$('proceedBtn').onclick = async () => {
+  const payload = form.read();
+  if (!payload.archiveRoot) { setStatus('Choose the Input Output Files folder first.', 'err'); return; }
+  form.save();
+  setBusy(true);
+  setStatus('Running…');
+  try {
+    // The result also arrives over the event stream; this catches the case
+    // where the request itself is rejected before a run ever starts.
+    await api('/api/proceed', { archiveRoot: payload.archiveRoot, ...range(), dryRun: payload.dryRun });
+  } catch (err) {
+    setBusy(false);
+    setStatus(err.message, 'err');
+    refreshStatus();
+  }
+};
+
+/* ---------- Run Extraction (Tab 1) ---------- */
+$('runExtractBtn').onclick = async () => {
+  const archiveRoot = $('archiveRoot').value.trim();
+  if (!archiveRoot) { setStatus('Choose the Input Output Files folder first.', 'err'); return; }
+  const problem = rangeError();
+  if (problem) { setStatus(problem, 'err'); return; }
+  form.save();
+  progress = {};
+  extracting = true;
+  applyState();
+  renderAll();
+  setStatus('Extracting…');
+  try {
+    // Progress and the outcome arrive as events (see connect()); this only
+    // catches a request that never started.
+    await api('/api/extract', { archiveRoot, ...range() });
+  } catch (err) {
+    extracting = false;
+    applyState();
+    setStatus('✗ ' + err.message, 'err');
+    await syncSignedInFields();
+  }
+};
+
+/* ---------- live event stream ---------- */
 function connect() {
   const es = new EventSource('/api/events?token=' + TOKEN);
   es.onopen = () => { $('connBadge').textContent = 'live'; $('connBadge').className = 'badge live'; };
   es.onerror = () => { $('connBadge').textContent = 'reconnecting…'; $('connBadge').className = 'badge off'; };
   es.addEventListener('log', (e) => appendLine(JSON.parse(e.data)));
+
   es.addEventListener('session-ended', () => {
     showLoginFields();
-    // Mid-run, the run-end that follows reports the failure itself.
-    if (!lastRunWasPortal) setLoginStatus('The Amrita HIS Edge window was closed — sign in again to run.', 'err');
+    // Mid-extraction, extract-end reports it itself.
+    if (!extracting) setLoginStatus('The Amrita HIS Edge window was closed — sign in again to use automatic extraction.', 'err');
   });
+
+  es.addEventListener('extract-start', () => {
+    extracting = true;
+    progress = {};
+    applyState();
+    renderAll();
+  });
+  es.addEventListener('file-progress', (e) => {
+    const d = JSON.parse(e.data);
+    progress[d.date] = progress[d.date] || {};
+    progress[d.date][d.key] = d;
+    if (d.state === 'done') refreshStatus();
+    renderAuto();
+  });
+  es.addEventListener('extract-end', async (e) => {
+    const r = JSON.parse(e.data);
+    extracting = false;
+    await loadStatus();
+    if (r.sessionLost) {
+      showLoginFields();
+      setLoginStatus('✗ The Amrita HIS session ended — sign in again to continue. Files already saved are kept.', 'err');
+      setStatus('The Amrita HIS session ended during extraction. Sign in again, or use the Manual tab.', 'err');
+    } else if (r.ok) {
+      setStatus('✓ Extraction finished — ' + r.done + ' file' + (r.done === 1 ? '' : 's') + ' saved.', 'ok');
+    } else {
+      setStatus(r.failed + ' file' + (r.failed === 1 ? '' : 's') + ' failed. Use "Switch to manual for this file", or run extraction again.', 'err');
+    }
+    applyState();
+  });
+
   es.addEventListener('run-start', (e) => {
     const d = JSON.parse(e.data);
     setBusy(true);
@@ -839,31 +1251,10 @@ function connect() {
     const r = JSON.parse(e.data);
     setBusy(false);
     finishRun(r);
-    if (lastRunWasPortal) {
-      // The Edge session stays signed in after a run unless the portal signed
-      // it out (or Edge was closed) — r.signedIn says which.
-      if (r.signedIn) showRunFields(signedInUsername);
-      else showLoginFields();
-      lastRunWasPortal = false;
-      if (r.ok) {
-        setLoginStatus(r.signedIn
-          ? '✓ Automation completed — still signed in. Run again any time; use Logout to sign out.'
-          : '✓ Automation completed. Sign in again to run once more.', 'ok');
-        renderPortalSummary(r);
-      } else {
-        const [prefix, withShot] = RUN_FAILURE[r.stage] || RUN_FAILURE.automation;
-        setLoginStatus(
-          '✗ ' + prefix + r.error + (withShot && r.screenshot ? ' — screenshot: ' + r.screenshot : ''),
-          'err',
-          r.docLink,
-          r.docLinkLabel,
-        );
-      }
-    }
+    refreshStatus();
   });
 }
 
-let lastMaster = null;
 function finishRun(r) {
   if (!r.ok) {
     setStatus(r.error || 'Run failed.', 'err');
@@ -880,7 +1271,8 @@ function finishRun(r) {
   setStatus(
     (written ? 'Saved — ' : 'Preview — ')
     + r.date + ' ' + r.write.mode + ' at row ' + r.write.row
-    + ' (' + (cols || 'no') + ' columns), ' + r.write.totalRows + ' date row(s) in the master.',
+    + ' (' + (cols || 'no') + ' columns), ' + r.write.totalRows + ' date row(s) in the master.'
+    + (r.daysProcessed > 1 ? ' ' + r.daysProcessed + ' days processed; showing the last.' : ''),
     'ok',
   );
   appendMeta('--- run finished ---');
@@ -897,7 +1289,7 @@ async function refreshPaths() {
       return;
     }
     try {
-      const l = await api('/api/resolve', { archiveRoot: root });
+      const l = await api('/api/resolve', { archiveRoot: root, reportDate: $('dateFrom').value || undefined });
       if (!l.ok) { $('paths').textContent = l.error || 'Could not resolve those paths.'; return; }
       $('paths').innerHTML =
         '<b>month</b> ' + esc(l.monthFolder) + '<br>'
@@ -910,22 +1302,16 @@ async function refreshPaths() {
 }
 
 /* ---------- pickers ---------- */
-async function pick(endpoint, opts, id) {
+$('pickRoot').onclick = async () => {
   try {
-    const r = await api(endpoint, opts);
+    const r = await api('/api/pick-folder', { title: 'Select the Input Output Files folder', initial: $('archiveRoot').value.trim() });
     if (!r.path) return;
-    $(id).value = r.path;
+    $('archiveRoot').value = r.path;
     form.save();
     refreshPaths();
+    refreshStatus();
   } catch (err) { setStatus(err.message, 'err'); }
-}
-
-$('pickRoot').onclick = () => pick('/api/pick-folder', { title: 'Select the Input Output Files folder', initial: $('archiveRoot').value.trim() }, 'archiveRoot');
-$('pickInput').onclick = () => pick('/api/pick-folder', { title: "Select the day's inputs folder", initial: $('inputFolder').value.trim() }, 'inputFolder');
-document.querySelectorAll('button[data-pick]').forEach((btn) => {
-  const slot = btn.dataset.pick;
-  btn.onclick = () => pick('/api/pick-file', { title: 'Select the ' + slot + ' file' }, 'file' + slot);
-});
+};
 
 $('openMaster').onclick = async () => {
   try { await api('/api/open', { path: lastMaster }); } catch (err) { setStatus(err.message, 'err'); }
@@ -934,29 +1320,32 @@ $('showMaster').onclick = async () => {
   try { await api('/api/reveal', { path: lastMaster }); } catch (err) { setStatus(err.message, 'err'); }
 };
 
-/* ---------- run ---------- */
-/* The report date is not asked for: the server takes it from the inputs folder / file names (e.g. 08-08-2026), else yesterday. */
-$('runBtn').onclick = async () => {
-  const payload = form.read();
-  if (!payload.archiveRoot) { setStatus('Choose the Input Output Files folder first.', 'err'); return; }
-  form.save();
-  lastRunWasPortal = false;
-  renderPortalSummary(null);
-  setLoginStatus('');
-  setBusy(true);
-  setStatus('Running…');
+$('archiveRoot').oninput = () => { form.save(); refreshPaths(); refreshStatus(); };
+
+/* ---------- settings (HIS address, retries; the rest lives in the settings file) ---------- */
+function closeSettings() { $('settingsModal').hidden = true; }
+$('settingsBtn').onclick = () => {
+  $('setHisUrl').value = hisConfig.hisUrl;
+  $('setRetries').value = String(hisConfig.retries);
+  $('settingsMsg').textContent = '';
+  $('settingsModal').hidden = false;
+};
+$('settingsCancel').onclick = closeSettings;
+$('settingsFile').onclick = async () => {
+  try { await api('/api/config/reveal', {}); }
+  catch (err) { $('settingsMsg').textContent = '✗ ' + err.message; }
+};
+$('settingsSave').onclick = async () => {
   try {
-    // The result also arrives over the event stream; this catches the case
-    // where the request itself is rejected before a run ever starts.
-    await api('/api/run', payload);
+    const r = await api('/api/config', { hisUrl: $('setHisUrl').value.trim(), retries: Number($('setRetries').value) });
+    hisConfig = r.config;
+    closeSettings();
+    applyState();
+    setStatus('Settings saved.', 'ok');
   } catch (err) {
-    setBusy(false);
-    setStatus(err.message, 'err');
+    $('settingsMsg').textContent = '✗ ' + err.message;
   }
 };
-
-$('archiveRoot').oninput = () => { form.save(); refreshPaths(); };
-['inputFolder', 'filePRQ', 'filePO', 'fileGRN'].forEach((id) => { $(id).oninput = form.save; });
 
 /* ---------- boot ---------- */
 (async () => {
@@ -964,35 +1353,46 @@ $('archiveRoot').oninput = () => { form.save(); refreshPaths(); };
   clearLoginFields();
   try {
     const s = await api('/api/status');
-    form.apply(s.settings);
-    prefillUsername(s.settings.username);
+    files = s.files;
+    savedLogin = s.savedLogin;
+    hisConfig = s.config;
+    defaultDates = s.defaults;
+    $('dateFrom').value = s.defaults.from;
+    $('dateTo').value = s.defaults.to;
 
-    // A window reload while a Sign In had already succeeded (but Run had not
-    // been clicked yet) should still show the waiting session rather than a
-    // blank login form — the browser is still open on the server side.
+    form.apply(s.settings);
+    prefillUsername(s.settings.username || savedLogin.username);
+    $('headless').checked = s.settings.headless === '1';
+    updateLoginUi();
+
+    // A window reload while a sign-in was already open should still show that
+    // session rather than a blank login form — the browser is still open on the
+    // server side.
     if (s.signedIn && s.signedInUsername) {
       setLoginStatus('✓ Logged in to Amrita HIS — verified', 'ok');
       showRunFields(s.signedInUsername);
       unlockDashboard();
       $('manualModeBtn').hidden = true;
     }
+    setTab(s.signedIn ? (s.settings.tab || 'auto') : 'manual', false);
 
     const b = $('scraperBadge');
     if (s.scraper.available) { b.textContent = 'portal pull: ready'; b.className = 'badge live'; }
     else {
       b.textContent = 'portal pull: unavailable'; b.className = 'badge off';
       $('signInBtn').disabled = true;
-      $('loginHint').textContent = 'Puppeteer is not part of this build — use the manual run below with files pulled or exported by hand.';
-      // No Amrita HIS to sign in to in this build — the mapping/manual half
-      // must stay fully usable on its own, so there is nothing to gate here.
+      $('loginHint').textContent = 'Puppeteer is not part of this build — use the Manual tab with files downloaded by hand.';
+      // No Amrita HIS to sign in to in this build — the manual half must stay
+      // fully usable on its own, so there is nothing to gate here.
       unlockDashboard();
       $('manualModeBtn').hidden = true;
+      setTab('manual', false);
     }
     appendMeta('Pharmacy MIS ' + s.version + ' — Node ' + s.node);
     appendMeta('Today ' + s.todayDisplay + ' — processing reports for ' + s.reportDateDisplay);
     appendMeta(s.scraper.available
       ? 'Portal pull available.'
-      : 'Portal pull (Puppeteer) is not part of this build — map files pulled or exported by hand.');
+      : 'Portal pull (Puppeteer) is not part of this build — use the Manual tab.');
   } catch (err) {
     // The footer this normally goes to is inside the Dashboard, which is
     // exactly what is hidden at this point — so this has to reach the user
@@ -1000,7 +1400,9 @@ $('archiveRoot').oninput = () => { form.save(); refreshPaths(); };
     setStatus('Could not reach the app backend: ' + err.message, 'err');
     setLoginStatus('✗ Could not reach the app backend: ' + err.message, 'err');
   }
+  applyState();
   refreshPaths();
+  refreshStatus();
 })();
 </script>
 </body>

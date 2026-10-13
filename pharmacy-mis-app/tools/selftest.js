@@ -242,6 +242,79 @@ async function main() {
   check('E left null when no PO file', onlyPrq.fields.E, null);
   check('E reported as skipped', onlyPrq.write.changes.find((c) => c.field === 'E').action, 'skipped (no value from source)');
 
+  section('Two-tab extraction: date range, file checks, shared storage');
+  {
+    const { dateRange } = require('../src/core/paths');
+    const rf = require('../src/core/reportFiles');
+    const creds = require('../src/core/credentials');
+    const cfg = require('../src/core/config');
+
+    check('range across a month end', dateRange('2026-08-30', '2026-09-02').map((d) => d.dmy),
+      ['30-08-2026', '31-08-2026', '01-09-2026', '02-09-2026']);
+    check('single day when "to" is omitted', dateRange('2026-10-12').length, 1);
+    let rangeErr = '';
+    try { dateRange('2026-10-12', '2026-10-01'); } catch (e) { rangeErr = e.message; }
+    truthy('backwards range refused', /before/i.test(rangeErr), rangeErr);
+    rangeErr = '';
+    try { dateRange('2026-01-01', '2026-12-31'); } catch (e) { rangeErr = e.message; }
+    truthy('runaway range refused', /at most/i.test(rangeErr), rangeErr);
+
+    const prqRef = path.join(REFERENCE, 'Pharmacy PRQ Details(1).CSV');
+    const poRef = path.join(REFERENCE, 'Purchase Order Detail Report - Pharmacy.xlsx');
+    check('real PRQ file passes as PRQ', (await rf.validateFile(prqRef, 'PRQ')).ok, true);
+    check('real PO workbook passes as PO', (await rf.validateFile(poRef, 'PO')).ok, true);
+    const wrong = await rf.validateFile(prqRef, 'PO');
+    check('PRQ file refused as PO', wrong.ok, false);
+    truthy('refusal says which report it looks like', /Pharmacy PRQ Details/.test(wrong.error), wrong.error);
+
+    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmis-tabs-'));
+    const emptyFile = path.join(scratchDir, 'empty.csv');
+    fs.writeFileSync(emptyFile, '');
+    const empty = await rf.validateFile(emptyFile, 'PRQ');
+    check('empty file refused', empty.ok, false);
+    truthy('empty file error is readable', /empty/i.test(empty.error), empty.error);
+    const pdf = path.join(scratchDir, 'report.pdf');
+    fs.writeFileSync(pdf, 'x');
+    truthy('wrong extension refused', /file type/i.test((await rf.validateFile(pdf, 'PRQ')).error || ''));
+    const junk = path.join(scratchDir, 'junk.csv');
+    fs.writeFileSync(junk, 'a,b,c\n1,2,3\n');
+    truthy('unrelated columns refused', /does not look like/i.test((await rf.validateFile(junk, 'PRQ')).error || ''));
+    const headerOnly = path.join(scratchDir, 'header-only.csv');
+    fs.writeFileSync(headerOnly, fs.readFileSync(prqRef, 'utf8').split(/\r?\n/)[0] + '\n');
+    truthy('header-only file refused', (await rf.validateFile(headerOnly, 'PRQ')).ok === false);
+
+    // Storing: standard name, per-date folder, nothing overwritten, same result from either tab.
+    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmis-store-'));
+    const day = resolveLayout(storeRoot, '2026-08-08');
+    check('nothing present at first', (await rf.dayStatus(day)).map((f) => f.state), ['missing', 'missing', 'missing']);
+    const copy1 = path.join(scratchDir, 'whatever-the-user-called-it.CSV');
+    fs.copyFileSync(prqRef, copy1);
+    const first = await rf.acceptFile(copy1, day, 'PRQ');
+    truthy('valid file accepted', first.ok, first.error || '');
+    check('saved under the standard name', path.basename(first.path), 'Pharmacy-PRQ-Details_08-08-2026.csv');
+    check('saved in the DD-MM-YYYY folder', path.basename(path.dirname(first.path)), '08-08-2026');
+    truthy('source file was moved, not copied', !fs.existsSync(copy1));
+    const copy2 = path.join(scratchDir, 'second.csv');
+    fs.copyFileSync(prqRef, copy2);
+    await rf.acceptFile(copy2, day, 'PRQ');
+    check('re-adding keeps the old copy in previous/',
+      fs.readdirSync(path.join(day.dayInputsDir, 'previous')).length, 1);
+    check('only one live file for the report',
+      fs.readdirSync(day.dayInputsDir).filter((n) => /^Pharmacy-PRQ/.test(n)).length, 1);
+    const refusedCopy = path.join(scratchDir, 'bad.csv');
+    fs.copyFileSync(junk, refusedCopy);
+    check('a rejected file is not stored', (await rf.acceptFile(refusedCopy, day, 'PO')).ok, false);
+    check('status after one file', (await rf.dayStatus(day)).map((f) => f.state), ['valid', 'missing', 'missing']);
+
+    check('saved login unavailable outside the app', creds.available(), false);
+    check('nothing can be saved outside the app', creds.save('user', 'secret'), false);
+    check('no saved login reported', creds.status().hasPassword, false);
+    check('settings default to the HIS address', /^https:\/\//.test(cfg.loadConfig().hisUrl), true);
+    let urlErr = '';
+    try { cfg.saveConfig({ hisUrl: 'not a url' }); } catch (e) { urlErr = e.message; }
+    truthy('bad HIS address refused before saving', /http/i.test(urlErr), urlErr);
+  }
+
   section('Embedded UI page');
   // src/ui/page.js writes the client-side script as TEXT inside its own
   // outer template literal. A raw \n there (instead of \\n) is consumed by

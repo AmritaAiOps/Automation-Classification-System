@@ -19,6 +19,8 @@ const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { ensureDir, formatPortalDate } = require('../core/paths');
+const { loadConfig } = require('../core/config');
+const { ensureFolder, storeFile, byKey } = require('../core/reportFiles');
 const { screenshotDir } = require('../core/appdata');
 
 /** Reports whether the Puppeteer half is available in this build. */
@@ -51,12 +53,15 @@ const REPORTS = [
 ];
 
 /**
- * The HIS home URL (overridable via AMRITA_HIS_URL). Must be the HIS host
- * (aefbd), not Keycloak's (ahisfbd): HIS issues the 302 into Keycloak whose
- * redirect_uri brings the browser back into HIS after sign-in.
+ * The HIS home URL, from the settings file (core/config.js; AMRITA_HIS_URL
+ * overrides it). Must be the HIS host (aefbd), not Keycloak's (ahisfbd): HIS
+ * issues the 302 into Keycloak whose redirect_uri brings the browser back into
+ * HIS after sign-in. Read at each use, so a change in Settings applies at once.
  */
-const PORTAL_URL = process.env.AMRITA_HIS_URL
-  || 'https://aefbd.amritahospitals.org/his/Jsp/Core_Common/index.jsp?task=off';
+const portalUrl = () => loadConfig().hisUrl;
+
+/** The sign-in form selectors: the built-in ones below, overridden by the settings file. */
+const loginSel = () => ({ ...SELECTORS.login, ...loadConfig().selectors.login });
 
 const TIMEOUTS = {
   navigation: 45000,
@@ -66,6 +71,9 @@ const TIMEOUTS = {
   download: Number(process.env.PHARMACY_MIS_DOWNLOAD_TIMEOUT_MS) || 300000,
 };
 
+// TODO(HIS selectors): the sign-in selectors below can be overridden without a rebuild in
+// %LOCALAPPDATA%PharmacyMISconfig.json ("selectors"). Anything else that is HIS-specific
+// (menu path, form labels, filters) is in navigateToReport() and REPORT_RUNS below.
 /**
  * Selectors in one place. The login ones are Keycloak's default theme IDs,
  * with name= fallbacks in case the theme is customised.
@@ -920,51 +928,6 @@ async function runReportAndWaitForDownload(page, { downloadDir, label }, log) {
   return file;
 }
 
-/**
- * Move a staged download into the day's inputs folder under a stable, human-readable name
- * (<report>_DD-MM-YYYY.<ext>) — never the browser's own (possibly reused) filename.
- *
- * A file already sitting at that name (the same day pulled twice) is never
- * overwritten: it is moved into a "previous" subfolder with a timestamp first.
- * It goes to a subfolder rather than beside the new file because the pipeline
- * reads every .csv/.xlsx directly inside the day's folder, and an old copy
- * next to the new one would compete with it.
- */
-function movePortalFile(sourcePath, destDir, label, dateDmy) {
-  const ext = path.extname(sourcePath) || '.csv';
-  const base = `${label}_${dateDmy}`;
-  const dest = path.join(destDir, `${base}${ext}`);
-  if (fs.existsSync(dest)) {
-    const prevDir = path.join(destDir, 'previous');
-    ensureFolder(prevDir, 'the "previous" folder for replaced downloads');
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-    let archived = path.join(prevDir, `${base}_replaced-${stamp}${ext}`);
-    for (let n = 2; fs.existsSync(archived); n += 1) {
-      archived = path.join(prevDir, `${base}_replaced-${stamp}-${n}${ext}`);
-    }
-    try {
-      fs.renameSync(dest, archived);
-    } catch (err) {
-      throw new Error(`${path.basename(dest)} already exists and could not be set aside (${err.message}). Is it open in another program?`);
-    }
-  }
-  try {
-    fs.renameSync(sourcePath, dest);
-  } catch (err) {
-    throw new Error(`Could not save ${path.basename(dest)} into ${destDir}: ${err.message}`);
-  }
-  return dest;
-}
-
-/** ensureDir() with a message that says which folder and why, for the operator. Reuses a folder that already exists. */
-function ensureFolder(dir, what) {
-  try {
-    return ensureDir(dir);
-  } catch (err) {
-    throw new Error(`Could not create ${what} (${dir}): ${err.message}. Check the Input Output Files folder exists and is writable.`);
-  }
-}
-
 /* ------------------------------------------------------------------ *
  * Login
  * ------------------------------------------------------------------ */
@@ -988,7 +951,7 @@ function shortUrl(url) {
 /** Turn a failed navigation into an actionable message: "did not connect" (theirs to fix) vs "refused". */
 function describeUnreachable(err) {
   const raw = err && err.message ? err.message : String(err);
-  const host = hostOf(PORTAL_URL);
+  const host = hostOf(portalUrl());
 
   if (/ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED|ENOTFOUND|EAI_AGAIN/i.test(raw)) {
     return `Could not reach Amrita HIS at ${host}: the address did not resolve. `
@@ -1020,17 +983,17 @@ async function login(page, credentials, log) {
       throw new Error('Amrita HIS username and password are required.');
     }
 
-    log.info(`connecting to ${hostOf(PORTAL_URL)}`);
+    log.info(`connecting to ${hostOf(portalUrl())}`);
     try {
-      await page.goto(PORTAL_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
+      await page.goto(portalUrl(), { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
     } catch (err) {
       throw new Error(describeUnreachable(err));
     }
     // Landing elsewhere is expected (HIS redirects into Keycloak); logging where separates "portal down" from "password rejected".
     log.ok(`connected — Amrita HIS answered, now at ${hostOf(page.url())}`);
 
-    const userField = await page.waitForSelector(SELECTORS.login.username, { timeout: TIMEOUTS.login }).catch(() => null);
-    const passField = userField && await page.$(SELECTORS.login.password);
+    const userField = await page.waitForSelector(loginSel().username, { timeout: TIMEOUTS.login }).catch(() => null);
+    const passField = userField && await page.$(loginSel().password);
     if (!userField || !passField) {
       throw new Error(
         'Connected to Amrita HIS, but its sign-in form was not found at '
@@ -1046,7 +1009,7 @@ async function login(page, credentials, log) {
     await passField.click({ clickCount: 3 });
     await passField.type(credentials.password, { delay: 12 });
 
-    const submit = await page.$(SELECTORS.login.submit);
+    const submit = await page.$(loginSel().submit);
     if (!submit) throw new Error('Amrita HIS login page could not be loaded: the sign-in button was not found.');
 
     await Promise.all([
@@ -1070,14 +1033,14 @@ async function login(page, credentials, log) {
  */
 async function verifyAuthentication(page, log) {
   const stillOnAuthUrl = /\/protocol\/openid-connect\/auth/i.test(page.url());
-  const formStillPresent = await page.$(SELECTORS.login.username).then(Boolean).catch(() => false);
+  const formStillPresent = await page.$(loginSel().username).then(Boolean).catch(() => false);
 
   if (stillOnAuthUrl || formStillPresent) {
     const errorText = await page.evaluate((sel) => {
       const el = document.querySelector(sel);
       const text = el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
       return text;
-    }, SELECTORS.login.error).catch(() => '');
+    }, loginSel().error).catch(() => '');
 
     // Prefer the portal's own wording (account locked, disabled...); otherwise the credentials were rejected.
     if (errorText) throw new Error(`Login failed: ${errorText}`);
@@ -1090,7 +1053,7 @@ async function verifyAuthentication(page, log) {
 /** Thrown mid-run if a navigation unexpectedly lands back on the sign-in form. */
 async function assertSessionAlive(page) {
   const backAtLogin = /\/protocol\/openid-connect\/auth/i.test(page.url())
-    || await page.$(SELECTORS.login.username).then(Boolean).catch(() => false);
+    || await page.$(loginSel().username).then(Boolean).catch(() => false);
   if (backAtLogin) throw new Error('Amrita HIS session expired. Please sign in again.');
 }
 
@@ -1254,7 +1217,7 @@ async function returnToPortalHome(page, log) {
   log.info(carryingReportFrames
     ? 'the last report\'s frame is still attached — reloading the portal home'
     : `leaving ${page.url()} — back to the portal home first`);
-  await page.goto(PORTAL_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
+  await page.goto(portalUrl(), { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
 
   // Wait for the menu rather than a fixed delay.
   const deadline = Date.now() + 3000;
@@ -1457,16 +1420,18 @@ async function setCombo(page, label, value, log) {
   log.ok(`${label} = ${value}`);
 }
 
-// Report label -> output file stem, in run order, with each report's filter setup.
+// TODO(HIS steps): to add or change a report, add an entry here (the HIS title, its filters) and a matching
+// entry in core/reportFiles.js (on-disk name, column check in core/detect.js, and the Manual tab's instructions).
+// Report label (as titled in the HIS) -> key into core/reportFiles.js (which owns the on-disk name), in run order, with each report's filter setup.
 const REPORT_RUNS = [
   {
     label: 'Pharmacy PRQ Details',
-    name: 'Pharmacy-PRQ-Details',
+    key: 'PRQ',
     fill: (page, log) => selectAllVisibleMultiSelects(page, log),
   },
   {
     label: 'Purchase Order Detail Report - Pharmacy',
-    name: 'Purchase-Order-Detail-Report-Pharmacy',
+    key: 'PO',
     fill: async (page, log) => {
       await selectAllOrThrow(page, 'Creation Status', log);
       await selectAllOrThrow(page, 'Processing Status', log);
@@ -1475,7 +1440,7 @@ const REPORT_RUNS = [
   },
   {
     label: 'Purchase Report Pharmacy Detail',
-    name: 'Purchase-Report-Pharmacy-Detail',
+    key: 'GRN',
     fill: async (page, log) => {
       // The tax schemes go FIRST, before either combo is touched. An open combo
       // list stays over the form and swallows the first click of the scheme
@@ -1586,7 +1551,7 @@ async function captureFailure(page, label, log) {
  * Launch Edge and authenticate; runs no report. The caller holds the session
  * (src/core/portalSession.js), passes it to runReports(), and closes it with closeSession().
  */
-async function startSession(credentials, log) {
+async function startSession(credentials, log, options = {}) {
   const puppeteer = await loadPuppeteer();
 
   const executablePath = resolveEdgeExecutablePath();
@@ -1597,15 +1562,17 @@ async function startSession(credentials, log) {
       + 'the full path of msedge.exe.',
     );
   }
-  log.info('opening Microsoft Edge — the portal will appear in its own window');
+  log.info(options.headless
+    ? 'opening Microsoft Edge in the background — no window will be shown'
+    : 'opening Microsoft Edge — the portal will appear in its own window');
 
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pharmacy-mis-edge-'));
 
   let browser;
   try {
     browser = await puppeteer.launch({
-      // Headful on purpose: the operator watches the run.
-      headless: false,
+      // Headful by default: the operator watches the run. "Run browser in background" (Tab 1) turns it off.
+      headless: !!options.headless,
       executablePath,
       // Throwaway profile: never touches the operator's own Edge, and no stale portal cookie can authenticate the run.
       userDataDir,
@@ -1699,11 +1666,11 @@ async function logoutSession(session, log) {
 }
 
 /**
- * Step 2: run the three reports against an already-authenticated session and
- * hand back a summary of the pulled files. Does NOT close the
- * session — the caller does that once it is done with it.
+ * Get the session's tab ready for a report: reopen it if the operator closed it,
+ * load a fresh copy of the portal home, and confirm the sign-in is still good.
+ * Throws "Amrita HIS session expired…" when the portal has signed the session out.
  */
-async function runReports(session, { layout }, log) {
+async function preparePage(session, log) {
   // The session now outlives a run, so the operator may have closed the
   // portal's tab (but not the Edge window) since the last one. The sign-in
   // lives in the browser's cookies, not the tab, so a fresh tab carries on.
@@ -1722,11 +1689,21 @@ async function runReports(session, { layout }, log) {
   // out on its side in the meantime, this is where that shows — as one clear
   // "sign in again" rather than a report that could not be found.
   try {
-    await page.goto(PORTAL_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
+    await page.goto(portalUrl(), { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.navigation });
   } catch (err) {
     throw new Error(describeUnreachable(err));
   }
   await assertSessionAlive(page);
+  return page;
+}
+
+/**
+ * Step 2: run the three reports against an already-authenticated session and
+ * hand back a summary of the pulled files. Does NOT close the
+ * session — the caller does that once it is done with it.
+ */
+async function runReports(session, { layout }, log) {
+  const page = await preparePage(session, log);
   ensureFolder(layout.dayInputsDir, `the folder for ${layout.date.dmy}`);
   const stagingDir = path.join(layout.dayInputsDir, `.portal-download-${Date.now()}`);
   ensureFolder(stagingDir, 'the temporary download folder');
@@ -1742,12 +1719,13 @@ async function runReports(session, { layout }, log) {
     }
     const empty = [];
     const files = [];
-    REPORT_RUNS.forEach(({ name }, i) => {
-      if (downloaded[i]) files.push(movePortalFile(downloaded[i], layout.dayInputsDir, name, layout.date.dmy));
-      else empty.push(name);
+    REPORT_RUNS.forEach(({ key }, i) => {
+      const def = byKey(key);
+      if (downloaded[i]) files.push(storeFile(downloaded[i], layout.dayInputsDir, def, layout.date.dmy));
+      else empty.push(def.stem);
     });
 
-    // movePortalFile() already throws if a source file is missing, but that
+    // storeFile() already throws if a source file is missing, but that
     // failure would arrive as a generic ENOENT — check explicitly so a
     // download that silently never landed on disk gets an error that says so,
     // instead of the run falling through to classify whatever is already in
@@ -1765,6 +1743,39 @@ async function runReports(session, { layout }, log) {
   } catch (err) {
     err.screenshot = err.screenshot || await captureFailure(page, err.step || 'portal-run', log);
     throw err; // fail fast: nothing past the failing report runs
+  } finally {
+    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* best effort cleanup */ }
+  }
+}
+
+/**
+ * Tab 1: download ONE report for ONE day through the signed-in session and
+ * store it as <Stem>_DD-MM-YYYY.csv in that day's folder. The caller (the
+ * server) loops over reports and days, retries, and reports progress, so a
+ * failure here stops only this file.
+ *
+ * Resolves { path } on success, or { empty: true } when the portal says there
+ * is no data for the day (nothing to retry). Throws otherwise; a message that
+ * starts "Amrita HIS session expired" means the whole session needs a new sign-in.
+ */
+async function runOneReport(session, { layout, key }, log) {
+  const run = REPORT_RUNS.find((r) => r.key === key);
+  const def = byKey(key);
+  if (!run || !def) throw new Error(`Unknown report "${key}".`);
+
+  const page = await preparePage(session, log);
+  ensureFolder(layout.dayInputsDir, `the folder for ${layout.date.dmy}`);
+  const stagingDir = path.join(layout.dayInputsDir, `.portal-download-${Date.now()}`);
+  ensureFolder(stagingDir, 'the temporary download folder');
+  try {
+    const downloaded = await runReport(page, {
+      label: run.label, reportDate: layout.date.iso, downloadDir: stagingDir, fillForm: () => run.fill(page, log),
+    }, log);
+    if (!downloaded) return { empty: true };
+    return { path: storeFile(downloaded, layout.dayInputsDir, def, layout.date.dmy) };
+  } catch (err) {
+    err.screenshot = err.screenshot || await captureFailure(page, err.step || 'portal-run', log);
+    throw err;
   } finally {
     try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* best effort cleanup */ }
   }
@@ -1817,6 +1828,7 @@ module.exports = {
   closeSession,
   logoutSession,
   runReports,
+  runOneReport,
   isAvailable,
   REPORTS,
   // Used by tools/check-alert-capture.js.

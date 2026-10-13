@@ -31,7 +31,8 @@ const { appDir } = require('./appdata');
  */
 
 /** The keys worth carrying across launches, and the only ones accepted from the page. */
-const KEYS = ['archiveRoot', 'inputFolder', 'filePRQ', 'filePO', 'fileGRN', 'mode', 'username'];
+// headless is "1"/"0": "Run browser in background" on the sign-in card.
+const KEYS = ['archiveRoot', 'inputFolder', 'filePRQ', 'filePO', 'fileGRN', 'mode', 'username', 'headless', 'tab'];
 
 function settingsFile() {
   return path.join(appDir(), 'settings.json');
