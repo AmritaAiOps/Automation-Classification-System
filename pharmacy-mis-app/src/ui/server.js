@@ -136,6 +136,58 @@ function logRunOutcome(result, archiveRoot, reportDate, inputFolder) {
   );
 }
 
+/**
+ * One date of /api/run-portal, after the portal pull: `outcome` is that date's
+ * entry from scraper.runReportsMulti() ({ files, error }). Classifies and writes
+ * the master row, then reports the result. `more` = further dates follow.
+ */
+async function finishPortalDate(session, outcome, more) {
+  const { layout } = outcome;
+  const sink = (entry) => broadcast('log', entry);
+  let result;
+  try {
+    if (outcome.error) {
+      const err = outcome.error;
+      const message = errMessage(err);
+      // A pull that stopped partway through never has files worth
+      // classifying — the classification stage below must not run against
+      // whatever was already sitting in the folder from a previous day.
+      throw Object.assign(new Error(message), {
+        stage: LOGIN_FAILURE.test(message) ? 'login' : 'portal',
+        screenshot: err.screenshot || null,
+        docLink: err.docLink || null,
+        docLinkLabel: err.docLinkLabel || null,
+      });
+    }
+    result = await runDailyReport({ archiveRoot: layout.root, reportDate: layout.date.iso, dryRun: false }, sink);
+    if (result.ok) result.portalFiles = outcome.files;
+    else result.stage = 'automation';
+  } catch (err) {
+    const message = errMessage(err);
+    result = {
+      ok: false,
+      error: message,
+      date: layout.date.iso,
+      stage: err.stage || (LOGIN_FAILURE.test(message) ? 'login' : 'automation'),
+      screenshot: err.screenshot || null,
+      docLink: err.docLink || null,
+      docLinkLabel: err.docLinkLabel || null,
+      log: [],
+    };
+  }
+  // Signed out on the portal's side (or the browser went away mid-run):
+  // nothing left worth keeping open, and the window has to ask for a fresh
+  // sign-in. Anything else keeps the session for the next Run.
+  if (result.stage === 'login' || !session.browser.connected) {
+    if (portalSession.get() === session) await portalSession.clear();
+  }
+  result.signedIn = portalSession.isActive();
+  result.more = !!more && result.signedIn; // the window waits for the last date before wrapping up
+  broadcast('run-end', result);
+  logRunOutcome(result, layout.root, layout.date.iso, null);
+  return result;
+}
+
 const routes = {
   /** Manual / preview run — files already pulled or exported by hand. Unchanged from before the Amrita HIS integration. */
   async 'POST /api/run'(body) {
@@ -258,56 +310,34 @@ const routes = {
     runInFlight = true;
 
     const session = portalSession.get();
-    const reportDate = body.reportDate || getPreviousCalendarDay().iso;
-    const layout = resolveLayout(body.archiveRoot, reportDate);
+    // From/To range (inclusive, ISO yyyy-mm-dd), one run per day; default is yesterday only.
+    const yesterday = getPreviousCalendarDay().iso;
+    const from = body.fromDate || body.reportDate || yesterday;
+    const to = body.toDate || from;
+    const dates = [];
+    for (let t = Date.parse(from + 'T00:00:00Z'); t <= Date.parse(to + 'T00:00:00Z') && dates.length < 31; t += 864e5) {
+      dates.push(new Date(t).toISOString().slice(0, 10));
+    }
+    if (!dates.length) { runInFlight = false; throw new Error('"To" date must not be before "From" date.'); }
 
-    broadcast('run-start', { at: new Date().toISOString(), dryRun: false, usingPortal: true });
     try {
-      const sink = (entry) => broadcast('log', entry);
-      let result;
+      const layouts = dates.map((d) => resolveLayout(body.archiveRoot, d));
+      broadcast('run-start', { at: new Date().toISOString(), dryRun: false, usingPortal: true, continued: false });
+      // One pull for every date (each report is opened once and run for all
+      // dates), then classify and write date by date.
+      let outcomes;
       try {
         // eslint-disable-next-line global-require
-        const scraper = require('../scraper');
-        let pull;
-        try {
-          pull = await scraper.runReports(session, { layout }, makeLogger(sink));
-        } catch (err) {
-          const message = errMessage(err);
-          // A pull that stopped partway through never has files worth
-          // classifying — the classification stage below must not run against
-          // whatever was already sitting in the folder from a previous day.
-          throw Object.assign(new Error(message), {
-            stage: LOGIN_FAILURE.test(message) ? 'login' : 'portal',
-            screenshot: err.screenshot || null,
-            docLink: err.docLink || null,
-            docLinkLabel: err.docLinkLabel || null,
-          });
-        }
-        result = await runDailyReport({ archiveRoot: layout.root, reportDate: layout.date.iso, dryRun: false }, sink);
-        if (result.ok) result.portalFiles = pull.files;
-        else result.stage = 'automation';
+        outcomes = await require('../scraper').runReportsMulti(session, { layouts }, makeLogger((entry) => broadcast('log', entry)));
       } catch (err) {
-        const message = errMessage(err);
-        result = {
-          ok: false,
-          error: message,
-          stage: err.stage || (LOGIN_FAILURE.test(message) ? 'login' : 'automation'),
-          screenshot: err.screenshot || null,
-          docLink: err.docLink || null,
-          docLinkLabel: err.docLinkLabel || null,
-          log: [],
-        };
+        outcomes = layouts.map((layout) => ({ layout, error: err })); // session-level failure: every date shares it
       }
-      // Signed out on the portal's side (or the browser went away mid-run):
-      // nothing left worth keeping open, and the window has to ask for a fresh
-      // sign-in. Anything else keeps the session for the next Run.
-      if (result.stage === 'login' || !session.browser.connected) {
-        if (portalSession.get() === session) await portalSession.clear();
+      let last;
+      for (let i = 0; i < outcomes.length; i++) {
+        last = await finishPortalDate(session, outcomes[i], i < outcomes.length - 1);
+        if (!portalSession.isActive()) break; // signed out — the remaining days cannot run
       }
-      result.signedIn = portalSession.isActive();
-      broadcast('run-end', result);
-      logRunOutcome(result, layout.root, layout.date.iso, null);
-      return result;
+      return last;
     } finally {
       runInFlight = false;
     }

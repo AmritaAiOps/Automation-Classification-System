@@ -62,8 +62,8 @@ const TIMEOUTS = {
   navigation: 45000,
   login: 30000,
   reportLoad: 30000,
-  // Generous: all 52 tax schemes are selected and the portal loads the report in its own tab for minutes on a busy day.
-  download: Number(process.env.PHARMACY_MIS_DOWNLOAD_TIMEOUT_MS) || 300000,
+  // 30s: a download that has not landed by then has stalled (a partial .crdownload stops growing). Override with the env var on a busy day.
+  download: Number(process.env.PHARMACY_MIS_DOWNLOAD_TIMEOUT_MS) || 30000,
 };
 
 /**
@@ -171,7 +171,7 @@ async function withFreshHandle(attemptFn, { attempts = 3, label = 'the field' } 
     } catch (err) {
       if (!isStaleHandleError(err)) throw err;
       lastErr = err;
-      await sleep(400); // let the replacement document finish arriving
+      await sleep(150); // let the replacement document finish arriving
     }
   }
   throw new Error(`${label} kept being replaced while it was being used (${lastErr.message})`);
@@ -285,9 +285,9 @@ async function realClick(page, handle) {
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
     await page.mouse.move(x, y);
-    await sleep(50);
+    await sleep(20);
     await page.mouse.down();
-    await sleep(60);
+    await sleep(20);
     await page.mouse.up();
     return;
   }
@@ -436,7 +436,7 @@ async function selectAllByRealClicks(page, field, labelText, log) {
 
   // Close anything left hanging over the form, or the first click is spent dismissing it instead of anchoring the range.
   await page.keyboard.press('Escape').catch(() => {});
-  await sleep(80);
+  await sleep(30);
 
   const handles = await field.$$('option');
   const first = options[0].i;
@@ -446,7 +446,7 @@ async function selectAllByRealClicks(page, field, labelText, log) {
     const handle = handles[index];
     if (!handle) throw new Error(`no option at index ${index}`);
     await handle.evaluate((el) => el.scrollIntoView({ block: 'nearest' }));
-    await sleep(60);
+    await sleep(30);
     const box = await handle.boundingBox();
     if (!box) throw new Error(`option ${index} has no clickable box`);
     if (withShift) await page.keyboard.down('Shift');
@@ -454,7 +454,7 @@ async function selectAllByRealClicks(page, field, labelText, log) {
     // and the middle of the box can land outside the visible list area.
     await page.mouse.click(box.x + Math.min(box.width / 2, 60), box.y + box.height / 2);
     if (withShift) await page.keyboard.up('Shift');
-    await sleep(60);
+    await sleep(30);
   };
 
   try {
@@ -506,7 +506,7 @@ async function selectAllOptions(page, labelText, log, { exact = false } = {}) {
   // A custom widget: open it, then tick every option it reveals — preferring
   // the widget's own "select all" control if it has one.
   await openControl(field).catch(() => {});
-  await sleep(200);
+  await sleep(100);
   // Evaluated through the field so the panel is looked for in the same document
   // the field lives in, which is not the top one when the form is in a frame.
   const result = await field.evaluate(() => {
@@ -818,8 +818,19 @@ const EMPTY_REPORT = /report is empty/i;
  */
 async function routeDownloadsTo(page, dir) {
   try {
-    const client = await page.browser().target().createCDPSession();
-    await client.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dir });
+    // One session for the browser's lifetime (not a new, never-closed one per report).
+    const browser = page.browser();
+    const trace = !!process.env.PHARMACY_MIS_TRACE_DOWNLOADS; // diagnostics: print Edge's own download events
+    if (!browser.__downloadClient) {
+      const client = browser.__downloadClient = await browser.target().createCDPSession();
+      // The portal's report stream is sometimes cut off and Edge cancels the download within a
+      // second; remember when, so waitForNewDownload() can fail at once instead of timing out.
+      client.on('Browser.downloadProgress', (e) => {
+        if (e.state === 'canceled') browser.__downloadCanceledAt = Date.now();
+        if (trace) console.error(new Date().toLocaleTimeString(), 'downloadProgress', JSON.stringify(e));
+      });
+    }
+    await browser.__downloadClient.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dir, eventsEnabled: true });
     return;
   } catch { /* fall through to the page-level call */ }
   const client = await page.target().createCDPSession();
@@ -841,6 +852,9 @@ async function waitForNewDownload(dir, before, { timeout = TIMEOUTS.download, la
     const names = fs.readdirSync(dir).filter((n) => !n.endsWith('.crdownload') && !n.endsWith('.tmp'));
     const fresh = names.find((n) => !before.has(n));
     if (fresh) { candidate = path.join(dir, fresh); break; }
+    if (page && (page.browser().__downloadCanceledAt || 0) > startedAt) {
+      throw new Error(`${label} download was cancelled by the browser`);
+    }
 
     // Heartbeat every 15s so a long wait is distinguishable from a hang.
     if (log && Date.now() >= nextHeartbeat) {
@@ -866,7 +880,7 @@ async function waitForNewDownload(dir, before, { timeout = TIMEOUTS.download, la
       throw err;
     }
 
-    await sleep(250);
+    await sleep(100);
   }
   if (!candidate) throw new Error(`${label} download timed out.`);
 
@@ -876,7 +890,7 @@ async function waitForNewDownload(dir, before, { timeout = TIMEOUTS.download, la
     try { size = fs.statSync(candidate).size; } catch { size = -1; }
     if (size === lastSize && size > 0) return candidate;
     lastSize = size;
-    await sleep(250);
+    await sleep(100);
   }
   throw new Error(`${label} download timed out (file never finished writing).`);
 }
@@ -1042,9 +1056,9 @@ async function login(page, credentials, log) {
 
     // Typed like a person; nothing here is logged (not the username, password or its length).
     await userField.click({ clickCount: 3 });
-    await userField.type(credentials.username, { delay: 12 });
+    await userField.type(credentials.username, { delay: 0 });
     await passField.click({ clickCount: 3 });
-    await passField.type(credentials.password, { delay: 12 });
+    await passField.type(credentials.password, { delay: 0 });
 
     const submit = await page.$(SELECTORS.login.submit);
     if (!submit) throw new Error('Amrita HIS login page could not be loaded: the sign-in button was not found.');
@@ -1393,7 +1407,7 @@ async function setDateFieldValue(page, handle, portalDateText, fieldName = 'the 
   await page.keyboard.press('KeyA');
   await page.keyboard.up('Control');
   await page.keyboard.press('Backspace');
-  await page.keyboard.type(portalDateText, { delay: 30 });
+  await page.keyboard.type(portalDateText, { delay: 10 });
   // Escape closes any calendar popup; Tab commits the value.
   await page.keyboard.press('Escape').catch(() => {});
   await page.keyboard.press('Tab').catch(() => {});
@@ -1429,10 +1443,10 @@ async function selectReportFormat(page, format, log) {
  * ------------------------------------------------------------------ */
 
 /** Navigate to a report, set the date, run `fillForm` for its filters, choose CSV, download. */
-async function runReport(page, { label, reportDate, downloadDir, fillForm }, log) {
+async function runReport(page, { label, reportDate, downloadDir, fillForm, navigate = true }, log) {
   const close = log.step(label);
   try {
-    await navigateToReport(page, label, log);
+    if (navigate) await navigateToReport(page, label, log);
     await setDateRange(page, reportDate, reportDate, log);
     await fillForm();
     await selectReportFormat(page, 'CSV', log);
@@ -1618,7 +1632,8 @@ async function startSession(credentials, log) {
         // Else Edge self-relaunches and the spawned process exits with code 0, so Puppeteer never sees DevTools (pptr.dev/troubleshooting).
         '--edge-skip-compat-layer-relaunch',
         // Stop Windows occlusion/throttling when Edge is behind the Pharmacy MIS window (run stalled at "back to the portal home").
-        '--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling',
+        '--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,msSmartScreenProtection,DownloadBubble,DownloadBubbleV2',
+        '--safebrowsing-disable-download-protection',
         '--disable-renderer-backgrounding',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
@@ -1699,11 +1714,30 @@ async function logoutSession(session, log) {
 }
 
 /**
- * Step 2: run the three reports against an already-authenticated session and
- * hand back a summary of the pulled files. Does NOT close the
- * session — the caller does that once it is done with it.
+ * Is the open report's form still there after a download? The portal can leave
+ * a finished report on a frame without the form (or a stale handle), in which
+ * case the caller falls back to opening the report afresh.
  */
-async function runReports(session, { layout }, log) {
+async function reportFormStillOpen(page, log) {
+  try {
+    await closeLeftoverReportTabs(page, log);
+    await keepPageActive(page);
+    return !!(await findFieldByLabel(page, 'from date'));
+  } catch { return false; }
+}
+
+/**
+ * Step 2: run the three reports for every date in `layouts` against an
+ * already-authenticated session. Report-major: each report is opened once and
+ * run for every date before moving to the next report (falling back to opening
+ * it afresh whenever its form is not reusable after a download). Does NOT close
+ * the session — the caller does that.
+ *
+ * Returns one { layout, files, empty, error } per layout. A date that fails
+ * (after the usual fail-fast within that date) does not stop the other dates;
+ * only a session-level problem (portal unreachable / signed out) throws.
+ */
+async function runReportsMulti(session, { layouts }, log) {
   // The session now outlives a run, so the operator may have closed the
   // portal's tab (but not the Edge window) since the last one. The sign-in
   // lives in the browser's cookies, not the tab, so a fresh tab carries on.
@@ -1727,47 +1761,90 @@ async function runReports(session, { layout }, log) {
     throw new Error(describeUnreachable(err));
   }
   await assertSessionAlive(page);
-  ensureFolder(layout.dayInputsDir, `the folder for ${layout.date.dmy}`);
-  const stagingDir = path.join(layout.dayInputsDir, `.portal-download-${Date.now()}`);
-  ensureFolder(stagingDir, 'the temporary download folder');
+
+  const results = layouts.map((layout) => ({
+    layout, downloaded: [], files: [], empty: [], error: null,
+    stagingDir: path.join(layout.dayInputsDir, `.portal-download-${Date.now()}`),
+  }));
+  for (const r of results) {
+    ensureFolder(r.layout.dayInputsDir, `the folder for ${r.layout.date.dmy}`);
+    ensureFolder(r.stagingDir, 'the temporary download folder');
+  }
 
   try {
+    for (const { label, fill } of REPORT_RUNS) {
+      let formOpen = false; // is this report's form currently on screen, ready to reuse?
+      for (const r of results) {
+        if (r.error) continue; // this date already failed; its other reports are skipped
+        try {
+          const attempt = async (navigate) => runReport(page, {
+            label, reportDate: r.layout.date.iso, downloadDir: r.stagingDir,
+            fillForm: () => fill(page, log), navigate,
+          }, log);
+          let navigate = !formOpen || !(await reportFormStillOpen(page, log));
+          for (let tries = 0; ; tries += 1) {
+            try {
+              r.downloaded.push(await attempt(navigate));
+              break;
+            } catch (err) {
+              // A download Edge cancels (or that never lands) is an intermittent portal stall: retry at once,
+              // re-clicking on the same form first and reopening the report on the last try. Any other
+              // failure on a reused form (it can keep the previous date's selections) gets one reopen.
+              const stalled = /download (timed out|was cancelled)/i.test(err.message);
+              if (stalled ? tries >= 2 : (navigate || tries > 0)) throw err;
+              navigate = stalled && tries === 0 ? !(await reportFormStillOpen(page, log)) : true;
+              log.warn(`${label}: ${stalled ? err.message : 'the reused form failed (' + err.message + ')'} — retrying${navigate ? ' with the report reopened' : ''}`);
+              for (const n of fs.readdirSync(r.stagingDir)) {
+                if (n.endsWith('.crdownload')) { try { fs.rmSync(path.join(r.stagingDir, n), { force: true }); } catch { /* still locked */ } }
+              }
+            }
+          }
+          formOpen = true;
+        } catch (err) {
+          err.screenshot = err.screenshot || await captureFailure(page, err.step || 'portal-run', log);
+          r.error = err;
+          formOpen = false;
+          // Browser gone: the remaining dates cannot run either.
+          if (!page.browser().connected) throw err;
+        }
+      }
+    }
+
     // A report the portal said was empty has no file to move, and is recorded
     // by name instead: "no data for this date" differs from "a download went missing".
-    const downloaded = [];
-    for (const { label, fill } of REPORT_RUNS) { // fail fast; nothing is moved unless all three ran
-      downloaded.push(await runReport(page, {
-        label, reportDate: layout.date.iso, downloadDir: stagingDir, fillForm: () => fill(page, log),
-      }, log));
+    for (const r of results) {
+      if (r.error) continue;
+      try {
+        REPORT_RUNS.forEach(({ name }, i) => {
+          if (r.downloaded[i]) r.files.push(movePortalFile(r.downloaded[i], r.layout.dayInputsDir, name, r.layout.date.dmy));
+          else r.empty.push(name);
+        });
+        // movePortalFile() already throws if a source file is missing, but that
+        // would arrive as a generic ENOENT — say plainly that a download never
+        // landed, rather than classifying whatever is already in the folder.
+        const missing = r.files.filter((f) => !fs.existsSync(f));
+        if (missing.length) {
+          throw new Error(
+            `${missing.length} expected download(s) did not appear on disk: `
+            + `${missing.map((f) => path.basename(f)).join(', ')}. `
+            + 'The run was stopped rather than classifying whatever was already in the folder.',
+          );
+        }
+      } catch (err) { r.error = err; }
     }
-    const empty = [];
-    const files = [];
-    REPORT_RUNS.forEach(({ name }, i) => {
-      if (downloaded[i]) files.push(movePortalFile(downloaded[i], layout.dayInputsDir, name, layout.date.dmy));
-      else empty.push(name);
-    });
-
-    // movePortalFile() already throws if a source file is missing, but that
-    // failure would arrive as a generic ENOENT — check explicitly so a
-    // download that silently never landed on disk gets an error that says so,
-    // instead of the run falling through to classify whatever is already in
-    // the folder.
-    const missing = files.filter((f) => !fs.existsSync(f));
-    if (missing.length) {
-      throw new Error(
-        `${missing.length} expected download(s) did not appear on disk: `
-        + `${missing.map((f) => path.basename(f)).join(', ')}. `
-        + 'The run was stopped rather than classifying whatever was already in the folder.',
-      );
-    }
-
-    return { reportDate: layout.date.iso, files, empty };
-  } catch (err) {
-    err.screenshot = err.screenshot || await captureFailure(page, err.step || 'portal-run', log);
-    throw err; // fail fast: nothing past the failing report runs
+    return results.map(({ layout, files, empty, error }) => ({ layout, files, empty, error }));
   } finally {
-    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch { /* best effort cleanup */ }
+    for (const r of results) {
+      try { fs.rmSync(r.stagingDir, { recursive: true, force: true }); } catch { /* best effort cleanup */ }
+    }
   }
+}
+
+/** Single-date form of runReportsMulti(): throws on failure, as before. */
+async function runReports(session, { layout }, log) {
+  const [r] = await runReportsMulti(session, { layouts: [layout] }, log);
+  if (r.error) throw r.error;
+  return { reportDate: layout.date.iso, files: r.files, empty: r.empty };
 }
 
 /**
@@ -1817,6 +1894,7 @@ module.exports = {
   closeSession,
   logoutSession,
   runReports,
+  runReportsMulti,
   isAvailable,
   REPORTS,
   // Used by tools/check-alert-capture.js.

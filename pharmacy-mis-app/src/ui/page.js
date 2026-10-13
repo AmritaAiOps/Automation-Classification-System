@@ -71,20 +71,8 @@ function page(token) {
   .left  { border-right: 1px solid var(--line); overflow-y: auto; padding: 14px; }
   .right { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; min-height: 0; }
 
-  /*
-   * The Dashboard (archive root, source files, manual run, results, log) is
-   * not just visually de-emphasised before sign-in — it is not rendered at
-   * all, so there is nothing there to click or read until Amrita HIS
-   * authentication succeeds. body.locked is the default in the markup below,
-   * so this is what a cold launch shows before any script has run, not just
-   * after JS decides to hide something.
-   */
-  body.locked main { display: flex; align-items: center; justify-content: center; overflow-y: auto; padding: 24px; }
-  body.locked .left { border-right: none; width: 440px; max-width: 100%; flex: 0 0 auto; overflow: visible; padding: 0; }
-  body.locked .left > section.card:not(#loginCard) { display: none; }
-  body.locked .right { display: none; }
-  body.locked #loginCard { padding: 22px 24px; }
-  body.locked #loginCard > h2 { font-size: 13px; margin-bottom: 16px; }
+  /* Automatic / Manual tabs: each shows only its own cards. */
+  body.tab-manual .auto-only, body.tab-auto .manual-only { display: none; }
 
   section.card {
     background: var(--panel); border: 1px solid var(--line);
@@ -151,23 +139,14 @@ function page(token) {
   .paths b { color: var(--ink-dim); font-weight: 500; }
 
   /* ---- results strip ---- */
-  .results {
-    display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));
-    gap: 1px; background: var(--line);
-    border-bottom: 1px solid var(--line);
-  }
-  .cellbox { background: var(--bg-bar); padding: 9px 10px; min-width: 0; }
-  .cellbox .col { font: 600 10px/1 var(--mono); color: var(--accent); letter-spacing: .5px; }
-  .cellbox .val {
-    font: 600 19px/1.25 "Segoe UI Variable Display", "Segoe UI", sans-serif;
-    margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .cellbox .val.empty { color: var(--dim-1); }
-  .cellbox .lbl {
-    font-size: 10px; color: var(--ink-faint); margin-top: 2px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .cellbox.changed { background: #16241d; }
+  .results { border-bottom: 1px solid var(--line); max-height: 40vh; overflow: auto; background: var(--bg-bar); }
+  .results table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .results th, .results td { padding: 6px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  .results th { position: sticky; top: 0; background: var(--bg-bar); font-size: 10px; font-weight: 600; color: var(--ink-faint); }
+  .results th:first-child, .results td:first-child { text-align: left; font-weight: 600; }
+  .results td.changed { background: #16241d; }
+  .results td.empty { color: var(--dim-1); }
+  .results tr.fail td { color: #e5736a; text-align: left; white-space: normal; }
 
   /* ---- log ---- */
   .logwrap { display: grid; grid-template-rows: auto 1fr; min-height: 0; }
@@ -244,7 +223,7 @@ function page(token) {
   .summary .v.big { color: var(--accent); font-size: 15px; }
 </style>
 </head>
-<body class="locked">
+<body class="tab-auto">
 
 <header>
   <h1>Pharmacy MIS</h1>
@@ -260,7 +239,11 @@ function page(token) {
 
 <main>
   <div class="left">
-    <section class="card" id="loginCard">
+    <div class="tabs" id="modeTabs" role="tablist">
+      <button role="tab" id="tabAuto" aria-selected="true">Automatic run</button>
+      <button role="tab" id="tabManual" aria-selected="false">Manual run</button>
+    </div>
+    <section class="card auto-only" id="loginCard">
       <h2>Amrita HIS Login</h2>
       <div id="loginFields">
         <label class="field">
@@ -276,10 +259,13 @@ function page(token) {
           Remember username
         </label>
         <button class="primary" id="signInBtn">Sign In</button>
-        <button class="ghost wide" id="manualModeBtn">Continue without signing in — manual run</button>
       </div>
       <div id="runFields" hidden>
         <div class="login-status ok" id="signedInAs"></div>
+        <div class="row">
+          <label class="field flex1"><span>From</span><input type="date" id="fromDate"></label>
+          <label class="field flex1"><span>To</span><input type="date" id="toDate"></label>
+        </div>
         <button class="primary" id="runPortalBtn">Run</button>
       </div>
       <div class="login-status" id="loginStatus"></div>
@@ -287,10 +273,7 @@ function page(token) {
       <p class="hint" id="loginHint">
         Puppeteer signs in to Amrita HIS with these credentials — nothing to type into a browser
         window yourself. Once signed in and verified, <b>Run</b> pulls the day's reports.
-        <br><br>
-        No credentials, or the reports already exported by hand? <b>Continue without signing in</b>
-        opens the same dashboard for a manual run — it maps the three reports from a folder you
-        already have and writes the same master row, it just fetches nothing from the portal.
+        No credentials, or reports already exported by hand? Use the <b>Manual run</b> tab.
       </p>
     </section>
 
@@ -306,7 +289,7 @@ function page(token) {
       <div class="paths" id="paths">Choose a folder to see where this run will read and write.</div>
     </section>
 
-    <section class="card">
+    <section class="card manual-only">
       <h2>2 · Source files</h2>
       <div class="tabs" role="tablist">
         <button role="tab" id="tabFolder" aria-selected="true">Inputs folder</button>
@@ -348,11 +331,11 @@ function page(token) {
       </div>
     </section>
 
-    <section class="card">
+    <section class="card manual-only">
       <h2>3 · Run (manual / preview)</h2>
       <p class="hint flush">
-        For files already pulled or exported by hand. The <b>Sign In &amp; Run</b> button above
-        is the normal path — it pulls straight from Amrita HIS and runs this same pipeline.
+        For files already pulled or exported by hand. The <b>Automatic run</b> tab is the normal
+        path — it pulls straight from Amrita HIS and runs this same pipeline.
       </p>
       <label class="field dry">
         <span>
@@ -474,21 +457,26 @@ const FIELDS = [
 ];
 const MONEY = new Set(['G', 'J']);
 
-function renderResults(fields, changes) {
-  const changed = new Set((changes || []).filter((c) => c.action !== 'skipped (no value from source)').map((c) => c.field));
-  $('results').innerHTML = FIELDS.map(([key, label]) => {
-    const v = fields ? fields[key] : null;
-    const shown = v == null ? '—' :
-      MONEY.has(key) ? Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-                     : Number(v).toLocaleString('en-IN');
-    return '<div class="cellbox' + (changed.has(key) ? ' changed' : '') + '">'
-      + '<div class="col">' + key + '</div>'
-      + '<div class="val' + (v == null ? ' empty' : '') + '" title="' + shown + '">' + shown + '</div>'
-      + '<div class="lbl" title="' + label + '">' + label + '</div>'
-      + '</div>';
+// One table row per date run, newest last; a re-run of the same date replaces its row.
+const resultRows = new Map();
+function renderResults(date, r) {
+  if (date == null) resultRows.clear();
+  else resultRows.set(date, r);
+  const head = '<tr><th>Date</th>' + FIELDS.map(([k, l]) => '<th title="' + l + '">' + k + ' ' + l + '</th>').join('') + '</tr>';
+  const rows = [...resultRows].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([d, res]) => {
+    if (!res.ok) return '<tr class="fail"><td>' + d + '</td><td colspan="' + FIELDS.length + '">✗ ' + String(res.error || 'Run failed').replace(/</g, '&lt;') + '</td></tr>';
+    const changed = new Set(((res.write && res.write.changes) || []).filter((c) => c.action !== 'skipped (no value from source)').map((c) => c.field));
+    return '<tr><td>' + d + '</td>' + FIELDS.map(([key]) => {
+      const v = res.fields[key];
+      const shown = v == null ? '—' :
+        MONEY.has(key) ? Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                       : Number(v).toLocaleString('en-IN');
+      return '<td class="' + (changed.has(key) ? 'changed' : '') + (v == null ? ' empty' : '') + '">' + shown + '</td>';
+    }).join('') + '</tr>';
   }).join('');
+  $('results').innerHTML = resultRows.size ? '<table>' + head + rows + '</table>' : '';
 }
-renderResults(null, null);
+renderResults(null);
 
 /* ---------- log ---------- */
 const logEl = $('log');
@@ -589,7 +577,6 @@ function setBusy(busy) {
   $('runPortalBtn').textContent = busy ? 'Running…' : 'Run';
   $('logoutBtn').disabled = busy;
   $('signInBtn').disabled = busy || signingIn;
-  $('manualModeBtn').disabled = busy;
 }
 
 /* ---------- Amrita HIS sign-in (two steps: Sign In, then Run) ---------- */
@@ -614,23 +601,6 @@ function showRunFields(username) {
   $('signedInAs').textContent = '✓ Signed in as ' + signedInUsername + ' — verified';
   $('sessionWho').textContent = signedInUsername;
   $('sessionBox').hidden = false;
-}
-
-/**
- * The Dashboard (archive root, source files, manual run, results, log) stays
- * unreachable — not merely dimmed — until Amrita HIS authentication succeeds
- * at least once this launch (body starts with the "locked" class already on
- * it, before any script runs). Once unlocked it stays unlocked for the rest
- * of this run of the app: re-authenticating for a second day's pull happens
- * through the same login card, now sitting in its normal place in the
- * sidebar, not by re-locking the whole window. The one exception is Logout,
- * which puts the window back in its cold-launch sign-in state (lockDashboard).
- */
-function unlockDashboard() {
-  document.body.classList.remove('locked');
-}
-function lockDashboard() {
-  document.body.classList.add('locked');
 }
 
 function setSigningIn(busy) {
@@ -677,18 +647,23 @@ function prefillUsername(username) {
   $('rememberUsername').checked = true;
 }
 
-/*
- * The manual half of the app needs no Amrita HIS session at all — /api/run
- * takes files that are already on disk and never touches the portal — so the
- * login card offers a way straight past it. The login card stays where it is
- * in the sidebar afterwards, so a portal pull is still one sign-in away in the
- * same launch; only the button goes, having nothing left to do.
- */
-$('manualModeBtn').onclick = () => {
-  unlockDashboard();
-  $('manualModeBtn').hidden = true;
-  setLoginStatus('Manual run — sign in above whenever the portal pull is needed.');
-};
+function setTab(t) {
+  document.body.classList.toggle('tab-auto', t === 'auto');
+  document.body.classList.toggle('tab-manual', t === 'manual');
+  $('tabAuto').setAttribute('aria-selected', String(t === 'auto'));
+  $('tabManual').setAttribute('aria-selected', String(t === 'manual'));
+}
+$('tabAuto').onclick = () => setTab('auto');
+$('tabManual').onclick = () => setTab('manual');
+
+/* Automatic-run dates default to yesterday (local time); the user can change either. */
+(function setDefaultDates() {
+  const d = new Date(Date.now() - 864e5);
+  const iso = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  $('fromDate').value = iso;
+  $('toDate').value = iso;
+})();
+
 
 /* Step 1: Sign In — authenticates and verifies, but does not pull any report yet. */
 $('signInBtn').onclick = async () => {
@@ -696,9 +671,7 @@ $('signInBtn').onclick = async () => {
   const password = $('hisPassword').value;
 
   // Sign In only needs credentials — the input/output folder is a
-  // Dashboard setting the user has not even seen yet at this point (the
-  // Dashboard is still locked), so they are chosen after signing in and read
-  // fresh when Run is clicked, not asked for here.
+  // Dashboard setting, read fresh when Run is clicked, not asked for here.
   if (!username) { setLoginStatus('Enter your Amrita HIS username.', 'err'); return; }
   if (!password) { setLoginStatus('Enter your Amrita HIS password.', 'err'); return; }
 
@@ -722,11 +695,10 @@ $('signInBtn').onclick = async () => {
     await api('/api/login', payload);
     setLoginStatus('✓ Logged in to Amrita HIS — verified', 'ok');
     showRunFields(username);
-    unlockDashboard();
   } catch (err) {
     // err.message is already a complete, specific sentence (e.g. "Incorrect
     // username or password.") — no need to prefix it with anything, and the
-    // Dashboard stays locked and the fields stay ready for another attempt
+    // fields stay ready for another attempt
     // until it reads correctly.
     setLoginStatus(
       '✗ ' + err.message + (err.screenshot ? ' — screenshot: ' + err.screenshot : ''),
@@ -755,8 +727,7 @@ $('logoutBtn').onclick = async () => {
     renderPortalSummary(null);
     $('hisPassword').value = ''; // the remembered username, if any, stays
     showLoginFields();
-    lockDashboard();
-    $('manualModeBtn').hidden = false;
+    setTab('auto');
     setStatus('Ready.');
     setLoginStatus('Logged out of Amrita HIS. Sign in with the same or a different account.');
   } catch (err) {
@@ -789,7 +760,7 @@ $('runPortalBtn').onclick = async () => {
     // request failure, so it is not read here at all.
     // No date is sent: the server works out the day (yesterday) when Run is
     // clicked, so a session left open overnight never pulls a stale date.
-    await api('/api/run-portal', { archiveRoot });
+    await api('/api/run-portal', { archiveRoot, fromDate: $('fromDate').value || undefined, toDate: $('toDate').value || undefined });
   } catch (err) {
     setBusy(false);
     setLoginStatus('✗ ' + err.message, 'err', err.docLink, err.docLinkLabel);
@@ -832,13 +803,14 @@ function connect() {
   es.addEventListener('run-start', (e) => {
     const d = JSON.parse(e.data);
     setBusy(true);
-    renderResults(null, null);
+    if (!d.continued) renderResults(null);
     appendMeta('--- run started ' + new Date(d.at).toLocaleString() + (d.dryRun ? ' (preview only)' : '') + ' ---');
   });
   es.addEventListener('run-end', (e) => {
     const r = JSON.parse(e.data);
-    setBusy(false);
     finishRun(r);
+    if (r.more) return; // more dates still to run: stay busy until the last one
+    setBusy(false);
     if (lastRunWasPortal) {
       // The Edge session stays signed in after a run unless the portal signed
       // it out (or Edge was closed) — r.signedIn says which.
@@ -865,12 +837,12 @@ function connect() {
 
 let lastMaster = null;
 function finishRun(r) {
+  renderResults(r.date || 'run', r);
   if (!r.ok) {
     setStatus(r.error || 'Run failed.', 'err');
     appendMeta('--- run failed ---');
     return;
   }
-  renderResults(r.fields, r.write && r.write.changes);
   lastMaster = r.layout.masterFile;
   $('openMaster').disabled = !r.write.written;
   $('showMaster').disabled = !r.write.written;
@@ -973,8 +945,6 @@ $('archiveRoot').oninput = () => { form.save(); refreshPaths(); };
     if (s.signedIn && s.signedInUsername) {
       setLoginStatus('✓ Logged in to Amrita HIS — verified', 'ok');
       showRunFields(s.signedInUsername);
-      unlockDashboard();
-      $('manualModeBtn').hidden = true;
     }
 
     const b = $('scraperBadge');
@@ -985,8 +955,7 @@ $('archiveRoot').oninput = () => { form.save(); refreshPaths(); };
       $('loginHint').textContent = 'Puppeteer is not part of this build — use the manual run below with files pulled or exported by hand.';
       // No Amrita HIS to sign in to in this build — the mapping/manual half
       // must stay fully usable on its own, so there is nothing to gate here.
-      unlockDashboard();
-      $('manualModeBtn').hidden = true;
+      setTab('manual');
     }
     appendMeta('Pharmacy MIS ' + s.version + ' — Node ' + s.node);
     appendMeta('Today ' + s.todayDisplay + ' — processing reports for ' + s.reportDateDisplay);
