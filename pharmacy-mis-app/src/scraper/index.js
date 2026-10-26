@@ -43,13 +43,6 @@ async function loadPuppeteer() {
   return mod.default || mod;
 }
 
-/** Shown in the UI's "portal pull" badge. Purely informational. */
-const REPORTS = [
-  { key: 'PRQ', label: 'Pharmacy PRQ Details', exportAs: 'CSV' },
-  { key: 'PO', label: 'Purchase Order Detail Report - Pharmacy', exportAs: 'CSV' },
-  { key: 'GRN', label: 'Purchase Report Pharmacy Detail', exportAs: 'CSV' },
-];
-
 /**
  * The HIS home URL (overridable via AMRITA_HIS_URL). Must be the HIS host
  * (aefbd), not Keycloak's (ahisfbd): HIS issues the 302 into Keycloak whose
@@ -81,9 +74,7 @@ const SELECTORS = {
   },
 };
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const { setTimeout: sleep } = require('timers/promises');
 
 /* ------------------------------------------------------------------ *
  * Generic, label-driven DOM helpers
@@ -275,12 +266,7 @@ async function setInputValue(handle, value) {
  */
 async function realClick(page, handle) {
   await handle.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'nearest' }));
-  if (process.env.PHARMACY_MIS_DEBUG_CLICK) {
-    const info = await handle.evaluate((el) => ({ tag: el.tagName, html: el.outerHTML.slice(0, 200), href: el.getAttribute && el.getAttribute('href') }));
-    console.error('[DEBUG realClick target]', JSON.stringify(info));
-  }
   const box = await handle.boundingBox().catch(() => null);
-  if (process.env.PHARMACY_MIS_DEBUG_CLICK) console.error('[DEBUG realClick box]', JSON.stringify(box));
   if (box) {
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
@@ -338,11 +324,6 @@ async function clickMenuItemByText(page, label) {
     const pool = exact.length ? exact : candidates;
     // Fewest descendants = closest to the text itself.
     pool.sort((a, b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
-
-    if (window.__PHARMACY_MIS_DEBUG_CLICK__) {
-      console.log('[DEBUG clickMenuItemByText] candidates=' + candidates.length + ' exact=' + exact.length);
-      console.log('[DEBUG pool[0]]', pool[0] ? pool[0].tagName + ' class="' + pool[0].className + '" text="' + norm(pool[0].textContent).slice(0, 80) + '" descendants=' + pool[0].querySelectorAll('*').length : 'none');
-    }
 
     // The portal's click handler is bound to the <a>, not the leaf label inside it (which "fewest descendants" picks).
     return pool[0].closest('a') || pool[0].querySelector('a') || pool[0];
@@ -1523,10 +1504,7 @@ function resolveEdgeExecutablePath() {
       'Microsoft', 'Edge', 'Application', 'msedge.exe'),
   ].filter(Boolean);
 
-  for (const exe of candidates) {
-    try { if (fs.existsSync(exe)) return exe; } catch { /* try the next candidate */ }
-  }
-  return null;
+  return candidates.find((exe) => fs.existsSync(exe)) || null;
 }
 
 /**
@@ -1600,7 +1578,7 @@ async function captureFailure(page, label, log) {
  * Launch Edge and authenticate; runs no report. The caller holds the session
  * (src/core/portalSession.js), passes it to runReports(), and closes it with closeSession().
  */
-async function startSession(credentials, log) {
+async function startSession(credentials, log, onWaitForUser) {
   const puppeteer = await loadPuppeteer();
 
   const executablePath = resolveEdgeExecutablePath();
@@ -1655,13 +1633,36 @@ async function startSession(credentials, log) {
     // Awaited: this has to be in place before anything can open a report tab,
     // and it is a few CDP round-trips, not a listener registration.
     await captureDialogsEverywhere(browser, log);
-    await login(page, credentials, log);
+    try {
+      await login(page, credentials, log);
+    } catch (err) {
+      // Wrong password: keep Edge open on the sign-in page and let the user finish signing in there.
+      if (!/^(Login failed|Incorrect username)/.test(err.message)) throw err;
+      log.warn(err.message + ' — sign in in the Edge window to continue (close Edge to give up).');
+      if (onWaitForUser) onWaitForUser(err.message);
+      await waitForManualSignIn(browser, page, err);
+      log.ok('Signed in to Amrita HIS in the Edge window');
+    }
     return { browser, page, userDataDir, startedAt: Date.now() };
   } catch (err) {
     if (page) err.screenshot = await captureFailure(page, 'login', log);
     await browser.close().catch(() => {});
     try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch { /* best effort */ }
     throw err;
+  }
+}
+
+/** Keycloak's sign-in (or failed-sign-in) page: being here means not signed in. */
+const SIGN_IN_URL = /\/protocol\/openid-connect\/auth|\/login-actions\//i;
+
+/** Poll until the user signs in by hand in Edge; rethrows `err` if Edge is closed first. */
+async function waitForManualSignIn(browser, page, err) {
+  for (;;) {
+    if (!browser.connected || page.isClosed()) throw err;
+    const stillOnLogin = SIGN_IN_URL.test(page.url())
+      || await page.$(SELECTORS.login.username).then(Boolean).catch(() => true);
+    if (!stillOnLogin) return;
+    await sleep(1000);
   }
 }
 
@@ -1689,10 +1690,8 @@ async function logoutSession(session, log) {
   if (!session || !session.browser) return { portalLoggedOut: false };
   let portalLoggedOut = false;
   try {
-    const attempt = (async () => {
-      const page = session.page && !session.page.isClosed() ? session.page : null;
-      if (!page) return false;
-      return page.evaluate(() => {
+    const page = session.page && !session.page.isClosed() ? session.page : null;
+    const attempt = page ? page.evaluate(() => {
         const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
         const match = /^\s*(log\s?out|sign\s?out)\s*$/i;
         const el = [...document.querySelectorAll('a, button, [role="menuitem"]')]
@@ -1700,10 +1699,9 @@ async function logoutSession(session, log) {
         if (!el) return false;
         el.click();
         return true;
-      });
-    })();
-    portalLoggedOut = await Promise.race([attempt, new Promise((resolve) => setTimeout(() => resolve(false), 5000))]);
-    if (portalLoggedOut) await new Promise((resolve) => setTimeout(resolve, 1000)); // let the sign-out request leave
+      }) : Promise.resolve(false);
+    portalLoggedOut = await withTimeout(attempt, 5000, false);
+    if (portalLoggedOut) await sleep(1000); // let the sign-out request leave
   } catch { /* closing the session below is what matters */ }
   if (log) {
     if (portalLoggedOut) log.info('signed out of the Amrita HIS portal');
@@ -1840,13 +1838,6 @@ async function runReportsMulti(session, { layouts }, log) {
   }
 }
 
-/** Single-date form of runReportsMulti(): throws on failure, as before. */
-async function runReports(session, { layout }, log) {
-  const [r] = await runReportsMulti(session, { layouts: [layout] }, log);
-  if (r.error) throw r.error;
-  return { reportDate: layout.date.iso, files: r.files, empty: r.empty };
-}
-
 /**
  * Pull the day's reports into layout.dayInputsDir and hand back a summary the
  * rest of the app can use. `credentials` ({ username, password }) is used
@@ -1875,14 +1866,15 @@ async function fetchDailyInputs({ layout, credentials = {}, log }) {
     const session = await startSession(credentials, log);
     let result;
     try {
-      result = await runReports(session, { layout }, log);
+      [result] = await runReportsMulti(session, { layouts: [layout] }, log);
     } finally {
       await closeSession(session);
     }
+    if (result.error) throw result.error;
 
     log.ok(`pulled ${result.files.length} file(s)`);
 
-    return { files: result.files, date: result.reportDate };
+    return { files: result.files };
   } finally {
     close();
   }
@@ -1893,14 +1885,10 @@ module.exports = {
   startSession,
   closeSession,
   logoutSession,
-  runReports,
   runReportsMulti,
   isAvailable,
-  REPORTS,
+  SIGN_IN_URL,
   // Used by tools/check-alert-capture.js.
-  selectAllOptions,
-  selectAllVisibleMultiSelects,
-  auditFormFields,
   attachDialogCapture,
   captureDialogsEverywhere,
   takeDialog,

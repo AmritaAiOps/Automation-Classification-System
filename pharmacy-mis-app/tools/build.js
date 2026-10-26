@@ -308,4 +308,4 @@ if (require.main === module) {
 
 // Shared with tools/check-unpack-recovery.js, which builds a small stand-in
 // launcher exactly the way this build makes the real one.
-module.exports = { main, findCsc, zipFolder, appendPayload, readSubsystem, powershell };
+module.exports = { findCsc, zipFolder, appendPayload, readSubsystem, powershell };

@@ -35,8 +35,11 @@ function onEnded(fn) {
   endedListener = fn;
 }
 
-/** Store a newly-authenticated session, closing whatever was there before. */
-async function set(session, username) {
+/**
+ * Store a newly-authenticated session, closing whatever was there before.
+ * `isBusy()` true = a run owns the page; a sign-in page seen then is the run's failure to report, not ours.
+ */
+async function set(session, username, isBusy = () => false) {
   await clear();
   const entry = { session, username, onDisconnect: null };
   entry.onDisconnect = () => {
@@ -48,9 +51,14 @@ async function set(session, username) {
     }
   };
   current = entry;
-  if (session.browser && typeof session.browser.once === 'function') {
-    session.browser.once('disconnected', entry.onDisconnect);
-  }
+  session.browser.once('disconnected', entry.onDisconnect);
+  // Signed out by hand in the Edge window: the tab lands back on the Keycloak sign-in page.
+  entry.onNavigated = (frame) => {
+    if (frame !== session.page.mainFrame() || isBusy()) return;
+    // eslint-disable-next-line global-require
+    if (require('../scraper').SIGN_IN_URL.test(frame.url())) entry.onDisconnect();
+  };
+  session.page.on('framenavigated', entry.onNavigated);
 }
 
 /** Whether a signed-in session is currently open. */
@@ -98,6 +106,7 @@ async function logout(log) {
 
 function detach(entry) {
   try { entry.session.browser.off('disconnected', entry.onDisconnect); } catch { /* browser already gone */ }
+  try { entry.session.page.off('framenavigated', entry.onNavigated); } catch { /* page already gone */ }
 }
 
 module.exports = { set, isActive, activeUsername, get, clear, logout, onEnded };

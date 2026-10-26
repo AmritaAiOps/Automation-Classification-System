@@ -9,7 +9,7 @@ const { resolveLayout, dateFromName, parseReportDate, ensureDir, getPreviousCale
 const { mapPrq } = require('./mapping/prq');
 const { mapPo } = require('./mapping/po');
 const { mapGrn } = require('./mapping/grn');
-const { writeDailyRow, FIELD_LABELS } = require('./excel/master');
+const { writeDailyRow } = require('./excel/master');
 
 /**
  * One day's run, start to finish. Every stage announces itself through the
@@ -118,7 +118,6 @@ async function execute(options, log) {
       masterFile: layout.masterFile,
     },
     fields,
-    labels: FIELD_LABELS,
     sources: identified.summary,
     unidentified: identified.unidentified,
     audit,

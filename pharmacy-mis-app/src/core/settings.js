@@ -84,4 +84,4 @@ function pick(source) {
   return out;
 }
 
-module.exports = { loadSettings, saveSettings, rememberUsername, KEYS };
+module.exports = { loadSettings, saveSettings, rememberUsername };

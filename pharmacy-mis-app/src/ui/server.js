@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const { version } = require('../../package.json');
 const { runDailyReport } = require('../pipeline');
 const { pickFolder, pickFile, revealInExplorer, openWithDefaultApp } = require('./dialogs');
-const { resolveLayout, dateFromName, getPreviousCalendarDay, getToday, formatPortalDate } = require('../core/paths');
+const { resolveLayout, getPreviousCalendarDay, getToday, formatPortalDate } = require('../core/paths');
 const { page } = require('./page');
 const { log } = require('../core/appdata');
 const { loadSettings, saveSettings, rememberUsername } = require('../core/settings');
@@ -22,13 +22,10 @@ function scraperInfo() {
   try {
     // eslint-disable-next-line global-require
     const scraper = require('../scraper');
-    return {
-      available: scraper.isAvailable(),
-      reports: scraper.REPORTS.map((r) => ({ key: r.key, label: r.label })),
-    };
+    return { available: scraper.isAvailable() };
   } catch (err) {
     log.warn('optional portal scraper unavailable: ' + err.message);
-    return { available: false, reports: [], error: err.message };
+    return { available: false };
   }
 }
 
@@ -69,10 +66,10 @@ function dropStream(res) {
   if (!streams.size) { clearInterval(keepAlive); keepAlive = null; }
 }
 
-// The operator closing the Edge window is how a sign-in ends now, so the
-// window has to hear about it and go back to the sign-in fields.
+// Edge closed or signed out by hand: the window has to hear about it
+// and go back to the sign-in fields.
 portalSession.onEnded(() => {
-  log.info('the Amrita HIS Edge window was closed — signed out');
+  log.info('Amrita HIS session ended (signed out in Edge, or Edge closed)');
   broadcast('session-ended', { at: new Date().toISOString() });
 });
 
@@ -146,19 +143,9 @@ async function finishPortalDate(session, outcome, more) {
   const sink = (entry) => broadcast('log', entry);
   let result;
   try {
-    if (outcome.error) {
-      const err = outcome.error;
-      const message = errMessage(err);
-      // A pull that stopped partway through never has files worth
-      // classifying — the classification stage below must not run against
-      // whatever was already sitting in the folder from a previous day.
-      throw Object.assign(new Error(message), {
-        stage: LOGIN_FAILURE.test(message) ? 'login' : 'portal',
-        screenshot: err.screenshot || null,
-        docLink: err.docLink || null,
-        docLinkLabel: err.docLinkLabel || null,
-      });
-    }
+    // A pull that stopped partway through never has files worth classifying —
+    // don't classify whatever was already sitting in the folder from a previous day.
+    if (outcome.error) throw outcome.error;
     result = await runDailyReport({ archiveRoot: layout.root, reportDate: layout.date.iso, dryRun: false }, sink);
     if (result.ok) result.portalFiles = outcome.files;
     else result.stage = 'automation';
@@ -168,7 +155,7 @@ async function finishPortalDate(session, outcome, more) {
       ok: false,
       error: message,
       date: layout.date.iso,
-      stage: err.stage || (LOGIN_FAILURE.test(message) ? 'login' : 'automation'),
+      stage: LOGIN_FAILURE.test(message) ? 'login' : (err === outcome.error ? 'portal' : 'automation'),
       screenshot: err.screenshot || null,
       docLink: err.docLink || null,
       docLinkLabel: err.docLinkLabel || null,
@@ -189,24 +176,23 @@ async function finishPortalDate(session, outcome, more) {
 }
 
 const routes = {
-  /** Manual / preview run — files already pulled or exported by hand. Unchanged from before the Amrita HIS integration. */
+  /** Manual / preview run — files already pulled or exported by hand. */
   async 'POST /api/run'(body) {
     if (runInFlight) throw new Error('A run is already in progress.');
     runInFlight = true;
-    broadcast('run-start', { at: new Date().toISOString(), dryRun: !!body.dryRun, usingPortal: false });
+    broadcast('run-start', { at: new Date().toISOString(), dryRun: !!body.dryRun });
     try {
       const result = await runDailyReport(
         {
           archiveRoot: body.archiveRoot,
           inputFolder: body.inputFolder || null,
           files: body.files || {},
-          reportDate: body.reportDate || null,
           dryRun: !!body.dryRun,
         },
         (entry) => broadcast('log', entry),
       );
       broadcast('run-end', result);
-      logRunOutcome(result, body.archiveRoot, body.reportDate, body.inputFolder);
+      logRunOutcome(result, body.archiveRoot, result.date, body.inputFolder);
       return result;
     } finally {
       runInFlight = false;
@@ -243,8 +229,12 @@ const routes = {
           + 'Install it (npm install puppeteer) to enable the Amrita HIS automation.',
         );
       }
-      const session = await scraper.startSession(credentials, makeLogger((entry) => broadcast('log', entry)));
-      await portalSession.set(session, body.username);
+      const session = await scraper.startSession(
+        credentials,
+        makeLogger((entry) => broadcast('log', entry)),
+        (error) => broadcast('login-wait', { error }),
+      );
+      await portalSession.set(session, body.username, () => runInFlight);
 
       if (body.rememberUsername) rememberUsername(body.username);
       else if (body.rememberUsername === false) rememberUsername('');
@@ -287,12 +277,6 @@ const routes = {
     return { ok: true, wasSignedIn: true };
   },
 
-  /** Cancel a signed-in-but-not-yet-run session — "Try Again" before Run was clicked, or switching accounts. */
-  async 'POST /api/cancel-login'() {
-    await portalSession.clear();
-    return { ok: true };
-  },
-
   /**
    * Step 2: run the three Amrita HIS reports against the session /api/login
    * opened, for whichever archive root and report date the user has chosen on
@@ -312,7 +296,7 @@ const routes = {
     const session = portalSession.get();
     // From/To range (inclusive, ISO yyyy-mm-dd), one run per day; default is yesterday only.
     const yesterday = getPreviousCalendarDay().iso;
-    const from = body.fromDate || body.reportDate || yesterday;
+    const from = body.fromDate || yesterday;
     const to = body.toDate || from;
     const dates = [];
     for (let t = Date.parse(from + 'T00:00:00Z'); t <= Date.parse(to + 'T00:00:00Z') && dates.length < 31; t += 864e5) {
@@ -322,7 +306,7 @@ const routes = {
 
     try {
       const layouts = dates.map((d) => resolveLayout(body.archiveRoot, d));
-      broadcast('run-start', { at: new Date().toISOString(), dryRun: false, usingPortal: true, continued: false });
+      broadcast('run-start', { at: new Date().toISOString(), dryRun: false });
       // One pull for every date (each report is opened once and run for all
       // dates), then classify and write date by date.
       let outcomes;
@@ -350,13 +334,10 @@ const routes = {
   async 'POST /api/resolve'(body) {
     if (!body.archiveRoot) return { ok: false };
     try {
-      // No date field any more: the day is yesterday unless a caller says otherwise.
-      const l = resolveLayout(body.archiveRoot, body.reportDate || getPreviousCalendarDay().iso);
+      const l = resolveLayout(body.archiveRoot, getPreviousCalendarDay().iso);
       return {
         ok: true,
-        monthDir: l.monthDir,
         dayInputsDir: l.dayInputsDir,
-        outputsDir: l.outputsDir,
         masterFile: l.masterFile,
         monthFolder: l.date.monthFolder,
       };
@@ -367,12 +348,12 @@ const routes = {
 
   async 'POST /api/pick-folder'(body) {
     const folder = await pickFolder({ title: body.title, initial: body.initial });
-    return { path: folder, dateFromName: folder ? dateFromName(folder) : null };
+    return { path: folder };
   },
 
   async 'POST /api/pick-file'(body) {
     const file = await pickFile({ title: body.title, initial: body.initial });
-    return { path: file, dateFromName: file ? dateFromName(file) : null };
+    return { path: file };
   },
 
   async 'POST /api/reveal'(body) {
@@ -392,19 +373,13 @@ const routes = {
       ok: true,
       version,
       node: process.versions.node,
-      electron: process.versions.electron || null,
       scraper: scraperInfo(),
-      today: getToday().iso,
-      reportDate: getPreviousCalendarDay().iso,
       todayDisplay: formatPortalDate(getToday().iso),
       reportDateDisplay: formatPortalDate(getPreviousCalendarDay().iso),
       // Whether a Sign In has already succeeded and is waiting for Run — lets
       // the window restore that state if it reconnects mid-flow.
       signedIn: portalSession.isActive(),
       signedInUsername: portalSession.activeUsername(),
-      // The Dashboard's own choices, which used to live in the page's
-      // localStorage and so were lost every launch — the server picks a new
-      // port each time, and that made a new empty store each time.
       settings: loadSettings(),
     };
   },
@@ -481,10 +456,8 @@ function createServer() {
       dropStream(res);
     }
     try { server.close(); } catch { /* already closing */ }
-    // Node 18.2+. Anything still holding a socket open is not worth waiting for.
-    if (typeof server.closeAllConnections === 'function') {
-      try { server.closeAllConnections(); } catch { /* nothing to close */ }
-    }
+    // Anything still holding a socket open is not worth waiting for.
+    try { server.closeAllConnections(); } catch { /* nothing to close */ }
     return sessionClosed;
   }
 

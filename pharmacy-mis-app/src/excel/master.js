@@ -271,4 +271,4 @@ async function saveAtomically(wb, target) {
   }
 }
 
-module.exports = { writeDailyRow, cellDateIso, FIELD_LABELS };
+module.exports = { writeDailyRow, cellDateIso };

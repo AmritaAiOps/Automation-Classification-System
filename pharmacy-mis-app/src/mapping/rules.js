@@ -88,7 +88,7 @@ function findTotalsRow(records, idFields, amountField) {
     const idsBlank = idFields.every((f) => clean(rec[f]) === '');
     if (!idsBlank) continue;
     const amount = parseAmount(rec[amountField]);
-    if (amount != null) return { record: rec, amount, row: rec.__row };
+    if (amount != null) return { amount, row: rec.__row };
   }
   return null;
 }
@@ -133,9 +133,7 @@ function totalOrWarn(log, totals, label, rows, rowsDesc) {
 
 module.exports = {
   dropWhere,
-  fmt,
   totalOrWarn,
-  clean,
   isAutoPrq,
   hasLetterSuffix,
   parseAmount,

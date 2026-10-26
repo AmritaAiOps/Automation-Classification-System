@@ -52,7 +52,6 @@ async function main() {
   check('hyphen letter suffix detected', rules.hasLetterSuffix('SE/PH/2026-27/3910-A'), true);
   check('bare letter suffix detected', rules.hasLetterSuffix('SE/PH/2026-27/3910A'), true);
   check('plain PO not suffixed', rules.hasLetterSuffix('SE/PH/2026-27/3919'), false);
-  check('year range not read as suffix', rules.hasLetterSuffix('SE/PH/2026-27/3919'), false);
   check('indian grouping parsed', rules.parseAmount(' 26,37,499.06 '), 2637499.06);
   check('dash means no value', rules.parseAmount(' -   '), null);
   check('native number passes through', rules.parseAmount(1674801.3), 1674801.3);

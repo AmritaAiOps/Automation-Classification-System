@@ -9,19 +9,18 @@ const { parseCsv, headerKey } = require('./csv');
  * A "sheet" is the common shape every source file is reduced to before any
  * mapping rule looks at it, whether it arrived as CSV or XLSX:
  *
- *   { rows, header, records, headerRowIndex, sheetName, kindHint }
+ *   { header, records, headerRowIndex, format }
  *
- * rows    – raw cell values, row-major, strings for CSV / native for XLSX
  * header  – normalised header keys (see headerKey)
- * records – one object per data row, keyed by header, with __row / __raw
+ * records – one object per data row, keyed by header, with __row
  */
 
-/** Read an XLSX file's first (or named) worksheet into row arrays. */
-async function readWorkbookRows(filePath, sheetName) {
+/** Read an XLSX file's first worksheet into row arrays. */
+async function readWorkbookRows(filePath) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(filePath);
-  const ws = sheetName ? wb.getWorksheet(sheetName) : wb.worksheets[0];
-  if (!ws) throw new Error(`No worksheet ${sheetName ? `"${sheetName}" ` : ''}in ${path.basename(filePath)}`);
+  const ws = wb.worksheets[0];
+  if (!ws) throw new Error(`No worksheet in ${path.basename(filePath)}`);
 
   const rows = [];
   const width = ws.columnCount;
@@ -33,7 +32,7 @@ async function readWorkbookRows(filePath, sheetName) {
     rows[rowNumber - 1] = arr;
   });
   for (let i = 0; i < rows.length; i += 1) if (!rows[i]) rows[i] = [];
-  return { rows, sheetName: ws.name };
+  return rows;
 }
 
 /** Unwrap the value shapes ExcelJS hands back (formula results, rich text). */
@@ -69,22 +68,22 @@ function findHeaderRowIndex(rows, lookahead = 10) {
   return best === -1 ? 0 : best;
 }
 
-function buildSheet(rows, extra = {}) {
-  const headerRowIndex = extra.headerRowIndex != null ? extra.headerRowIndex : findHeaderRowIndex(rows);
+function buildSheet(rows, format) {
+  const headerRowIndex = findHeaderRowIndex(rows);
   const header = (rows[headerRowIndex] || []).map(headerKey);
   // Values are copied across as-is so that XLSX native types (numbers,
   // dates) reach the mapping rules untouched.
   const records = [];
   for (let r = headerRowIndex + 1; r < rows.length; r += 1) {
     const raw = rows[r] || [];
-    const rec = { __row: r + 1, __raw: raw };
+    const rec = { __row: r + 1 };
     for (let c = 0; c < header.length; c += 1) {
       if (!header[c]) continue;
       rec[header[c]] = raw[c] === undefined ? '' : raw[c];
     }
     records.push(rec);
   }
-  return { rows, header, records, headerRowIndex, ...extra };
+  return { header, records, headerRowIndex, format };
 }
 
 /** Load any supported source file into the common sheet shape. */
@@ -93,11 +92,10 @@ async function loadSheet(filePath) {
   if (ext === '.csv' || ext === '.txt') {
     const text = fs.readFileSync(filePath, 'utf8');
     const rows = parseCsv(text);
-    return buildSheet(rows, { source: filePath, format: 'csv' });
+    return buildSheet(rows, 'csv');
   }
   if (ext === '.xlsx' || ext === '.xlsm') {
-    const { rows, sheetName } = await readWorkbookRows(filePath);
-    return buildSheet(rows, { source: filePath, format: 'xlsx', sheetName });
+    return buildSheet(await readWorkbookRows(filePath), 'xlsx');
   }
   throw new Error(`Unsupported file type "${ext}" — expected .csv or .xlsx (${path.basename(filePath)})`);
 }

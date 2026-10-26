@@ -73,6 +73,8 @@ function page(token) {
 
   /* Automatic / Manual tabs: each shows only its own cards. */
   body.tab-manual .auto-only, body.tab-auto .manual-only { display: none; }
+  /* Signed out: only the login card until Sign In succeeds. */
+  body.signed-out .left > :not(#loginCard) { display: none; }
 
   section.card {
     background: var(--panel); border: 1px solid var(--line);
@@ -110,13 +112,11 @@ function page(token) {
   button.ghost { background: transparent; }
 
   .hint { font-size: 11px; color: var(--ink-faint); margin: 6px 0 0; }
-  .hint.pull { margin: -4px 0 10px; }
   .hint.flush { margin: 0 0 8px; }
   label.field.dry { margin-bottom: 8px; }
   label.field.dry > span { display: flex; align-items: center; gap: 6px; margin: 0; }
   label.field.dry input { flex: 0 0 auto; }
   .row.gap-top { margin-top: 8px; }
-  button.wide { width: 100%; margin-top: 6px; }
   button.flex1 { flex: 1; }
   #copyLog { padding: 4px 9px; }
   #clearLog { padding: 3px 8px; }
@@ -223,7 +223,7 @@ function page(token) {
   .summary .v.big { color: var(--accent); font-size: 15px; }
 </style>
 </head>
-<body class="tab-auto">
+<body class="tab-auto signed-out">
 
 <header>
   <h1>Pharmacy MIS</h1>
@@ -588,6 +588,8 @@ const setLoginStatus = (...a) => setMessage('loginStatus', 'login-status', ...a)
 
 /* Not signed in: sign-in fields shown, Logout hidden. */
 function showLoginFields() {
+  document.body.classList.add('signed-out');
+  setTab('auto');
   $('loginFields').hidden = false;
   $('runFields').hidden = true;
   $('sessionBox').hidden = true;
@@ -596,6 +598,7 @@ let signedInUsername = '';
 /* Signed in: Run shown, Logout (and who is signed in) visible in the header. */
 function showRunFields(username) {
   signedInUsername = username || signedInUsername;
+  document.body.classList.remove('signed-out');
   $('loginFields').hidden = true;
   $('runFields').hidden = false;
   $('signedInAs').textContent = '✓ Signed in as ' + signedInUsername + ' — verified';
@@ -718,7 +721,6 @@ $('signInBtn').onclick = async () => {
  * session state is re-read from the server rather than assumed.
  */
 $('logoutBtn').onclick = async () => {
-  if (pipelineBusy) return;
   $('logoutBtn').disabled = true;
   $('logoutBtn').textContent = 'Logging out…';
   try {
@@ -727,7 +729,6 @@ $('logoutBtn').onclick = async () => {
     renderPortalSummary(null);
     $('hisPassword').value = ''; // the remembered username, if any, stays
     showLoginFields();
-    setTab('auto');
     setStatus('Ready.');
     setLoginStatus('Logged out of Amrita HIS. Sign in with the same or a different account.');
   } catch (err) {
@@ -740,7 +741,7 @@ $('logoutBtn').onclick = async () => {
   }
 };
 
-/* Step 2: Run — pulls the three Amrita HIS reports through the session Sign In left waiting, for whichever Input Output Files folder is set on the Dashboard right now. The report date is worked out by the app (yesterday), not typed in. */
+/* Step 2: Run — pulls the three Amrita HIS reports through the session Sign In left waiting, for the Input Output Files folder and From/To dates set right now. */
 $('runPortalBtn').onclick = async () => {
   const archiveRoot = $('archiveRoot').value.trim();
   if (!archiveRoot) { setStatus('Choose the Input Output Files folder first.', 'err'); return; }
@@ -758,8 +759,6 @@ $('runPortalBtn').onclick = async () => {
     // (handled in connect() below): /api/run-portal's JSON response also
     // carries an "error" field on a failed run, which api() treats as a
     // request failure, so it is not read here at all.
-    // No date is sent: the server works out the day (yesterday) when Run is
-    // clicked, so a session left open overnight never pulls a stale date.
     await api('/api/run-portal', { archiveRoot, fromDate: $('fromDate').value || undefined, toDate: $('toDate').value || undefined });
   } catch (err) {
     setBusy(false);
@@ -795,15 +794,18 @@ function connect() {
   es.onopen = () => { $('connBadge').textContent = 'live'; $('connBadge').className = 'badge live'; };
   es.onerror = () => { $('connBadge').textContent = 'reconnecting…'; $('connBadge').className = 'badge off'; };
   es.addEventListener('log', (e) => appendLine(JSON.parse(e.data)));
+  es.addEventListener('login-wait', (e) => {
+    setLoginStatus('✗ ' + JSON.parse(e.data).error + '\\nSign in in the Edge window — the app continues once you are in.', 'err');
+  });
   es.addEventListener('session-ended', () => {
     showLoginFields();
     // Mid-run, the run-end that follows reports the failure itself.
-    if (!lastRunWasPortal) setLoginStatus('The Amrita HIS Edge window was closed — sign in again to run.', 'err');
+    if (!lastRunWasPortal) setLoginStatus('The Amrita HIS session ended (signed out or Edge closed) — sign in again to run.', 'err');
   });
   es.addEventListener('run-start', (e) => {
     const d = JSON.parse(e.data);
     setBusy(true);
-    if (!d.continued) renderResults(null);
+    renderResults(null);
     appendMeta('--- run started ' + new Date(d.at).toLocaleString() + (d.dryRun ? ' (preview only)' : '') + ' ---');
   });
   es.addEventListener('run-end', (e) => {
@@ -955,6 +957,7 @@ $('archiveRoot').oninput = () => { form.save(); refreshPaths(); };
       $('loginHint').textContent = 'Puppeteer is not part of this build — use the manual run below with files pulled or exported by hand.';
       // No Amrita HIS to sign in to in this build — the mapping/manual half
       // must stay fully usable on its own, so there is nothing to gate here.
+      document.body.classList.remove('signed-out');
       setTab('manual');
     }
     appendMeta('Pharmacy MIS ' + s.version + ' — Node ' + s.node);

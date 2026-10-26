@@ -31,7 +31,7 @@ async function runWithPortalPull({ archiveRoot, reportDate, credentials, dryRun 
     pull = await scraper.fetchDailyInputs({
       layout,
       credentials,
-      log: { step: (m) => logStep(trackedSink, m), ...loggerFns(trackedSink) },
+      log: makeLogger(trackedSink),
     });
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -55,27 +55,20 @@ const LOGIN_FAILURE = new RegExp('^(' + [
   'Incorrect username or password',
   'Could not reach Amrita HIS', // never connected: DNS, refused, timeout, certificate
   'Connected to Amrita HIS, but its sign-in form was not found',
-  'Amrita HIS login page could not be loaded', // wording used before the messages above
+  'Amrita HIS login page could not be loaded', // sign-in button missing
   'Amrita HIS username and password are required',
   'Amrita HIS session expired', // signed out on the portal's side between runs
   'Portal pull unavailable',
 ].join('|') + ')', 'i');
 
 /** A minimal object matching core/logger.js's Logger surface, streaming straight to a plain sink function. */
-function loggerFns(sink) {
-  const emit = (level) => (message, detail) => sink({
-    ts: new Date().toISOString(), level, indent: 1, message: String(message), detail: detail === undefined ? null : detail,
-  });
-  return { debug: emit('debug'), info: emit('info'), ok: emit('ok'), warn: emit('warn'), error: emit('error') };
-}
-function logStep(sink, message) {
-  sink({ ts: new Date().toISOString(), level: 'step', indent: 0, message: String(message), detail: null });
-  return () => {};
-}
-
-/** Exported so the GUI's split /api/login + /api/run-portal routes (src/ui/server.js) can log through the same shape as the single-shot CLI path above. */
 function makeLogger(sink) {
-  return { step: (m) => logStep(sink, m), ...loggerFns(sink) };
+  const emit = (level, indent) => (message, detail) => sink({
+    ts: new Date().toISOString(), level, indent, message: String(message), detail: detail === undefined ? null : detail,
+  });
+  const log = { step: (m) => { emit('step', 0)(m); return () => {}; } };
+  for (const level of ['debug', 'info', 'ok', 'warn', 'error']) log[level] = emit(level, 1);
+  return log;
 }
 
 module.exports = { runWithPortalPull, makeLogger, LOGIN_FAILURE };
